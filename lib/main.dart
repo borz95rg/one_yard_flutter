@@ -1116,6 +1116,8 @@ class _TopBar extends StatelessWidget {
               _NavButton(Icons.emoji_events, 'Достижения',
                   onPressed: () =>
                       _showCivilizationPanel(context, game, 'Достижения')),
+              _NavButton(Icons.public, 'Мир',
+                  onPressed: () => _showCivilizationPanel(context, game, 'Мир')),
             ]),
           ],
         ]),
@@ -1295,6 +1297,33 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
           _line('Мировая торговля', '${civ.worldTradeVolume.floor()}'),
           _line('Открытые поселения', '${civ.foundedSettlements}'),
           _line('Переселения', '${civ.migrations}'),
+        ],
+      'Мир' => <Widget>[
+          _line('Поселения · мировая торговля',
+              '${civ.foundedSettlements} / ${civ.worldSettlements.length} · ${civ.worldTradeVolume.floor()}'),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 190,
+            width: double.infinity,
+            child: CustomPaint(
+              painter: _WorldMapPainter(cities: civ.worldSettlements),
+            ),
+          ),
+          const SizedBox(height: 8),
+          for (final city in civ.worldSettlements)
+            _line(
+                '${city.name} · ${city.unlocked ? '${city.population} жителей' : 'закрыто'}',
+                city.unlocked
+                    ? 'казна ${city.treasury.floor()} · армия ${city.army.floor()}'
+                    : 'откроется при ${city.populationThreshold} жителях'),
+          _line('Миграции', '${civ.migrations} · городам свой бюджет, запасы и оборона'),
+          const Divider(),
+          const Text('Соседние государства',
+              style: TextStyle(fontWeight: FontWeight.w800)),
+          for (final state in civ.foreignNations)
+            _line(
+                '${state.name} · ${state.population} жителей',
+                'казна ${state.treasury.floor()} · армия ${state.army} · связь ${state.relation.round()}%'),
         ],
       'Население' => <Widget>[
           _line('Жителей', '${people.length}'),
@@ -1788,5 +1817,145 @@ class _GlassPanel extends StatelessWidget {
                 color: Colors.black38, blurRadius: 12, offset: Offset(0, 4))
           ]),
       child: child);
+}
+
+class _WorldMapPainter extends CustomPainter {
+  const _WorldMapPainter({required this.cities});
+  final List<WorldSettlementState> cities;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final bounds = Offset.zero & size;
+    final clip = RRect.fromRectAndRadius(bounds, const Radius.circular(12));
+    canvas.save();
+    canvas.clipRRect(clip);
+    canvas.drawRect(
+      bounds,
+      Paint()
+        ..shader = const LinearGradient(
+          colors: [Color(0xff729e6c), Color(0xff365c4e)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ).createShader(bounds),
+    );
+    for (var i = 0; i < 22; i++) {
+      final x = ((i * 73 + 19) % 101) / 100 * size.width;
+      final y = ((i * 47 + 13) % 97) / 100 * size.height;
+      canvas.drawOval(
+        Rect.fromCenter(
+            center: Offset(x, y), width: 9 + i % 5 * 5, height: 5 + i % 4 * 3),
+        Paint()
+          ..color = i.isEven
+              ? const Color(0x2234442b)
+              : const Color(0x22e2cf8a),
+      );
+    }
+    final river = Path()
+      ..moveTo(size.width * .02, size.height * .12)
+      ..cubicTo(size.width * .3, size.height * .24, size.width * .27,
+          size.height * .67, size.width * .56, size.height * .48)
+      ..cubicTo(size.width * .76, size.height * .34, size.width * .78,
+          size.height * .8, size.width * 1.03, size.height * .9);
+    canvas.drawPath(
+      river,
+      Paint()
+        ..color = const Color(0xff428fb4)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(12, size.width * .045)
+        ..strokeCap = StrokeCap.round,
+    );
+    canvas.drawPath(
+      river,
+      Paint()
+        ..color = const Color(0x779bd5df)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5,
+    );
+
+    final openCities = cities.where((city) => city.unlocked).toList();
+    final road = Paint()
+      ..color = const Color(0xffd7c394)
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round;
+    for (var i = 1; i < openCities.length; i++) {
+      final a = Offset(openCities[i - 1].x * size.width,
+          openCities[i - 1].y * size.height);
+      final b = Offset(openCities[i].x * size.width,
+          openCities[i].y * size.height);
+      canvas.drawLine(a, b, road);
+      canvas.drawLine(
+          a,
+          b,
+          Paint()
+            ..color = const Color(0x99fff0cb)
+            ..strokeWidth = .7);
+    }
+    for (final city in cities) {
+      final center = Offset(city.x * size.width, city.y * size.height);
+      if (!city.unlocked) {
+        final outline = Paint()
+          ..color = const Color(0x99f2e9c8)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.4;
+        for (var segment = 0; segment < 8; segment++) {
+          canvas.drawArc(
+              Rect.fromCircle(center: center, radius: 8),
+              segment * math.pi / 4,
+              math.pi / 8,
+              false,
+              outline);
+        }
+        continue;
+      }
+      final capital = city.isCapital;
+      final radius = capital ? 11.0 : 8.0;
+      canvas.drawCircle(center + const Offset(0, 2), radius + 2,
+          Paint()..color = const Color(0x660f2119));
+      canvas.drawCircle(center, radius,
+          Paint()..color = capital ? const Color(0xffffd05c) : const Color(0xffe9ead4));
+      canvas.drawCircle(
+          center,
+          radius,
+          Paint()
+            ..color = const Color(0xff394c3e)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.4);
+      canvas.drawRect(
+          Rect.fromCenter(
+              center: center.translate(-2, -1), width: 4, height: 6),
+          Paint()..color = const Color(0xff557c68));
+      canvas.drawRect(
+          Rect.fromCenter(
+              center: center.translate(3, -2), width: 4, height: 8),
+          Paint()..color = const Color(0xff8aa181));
+      final label = TextPainter(
+        text: TextSpan(
+          text: city.name,
+          style: const TextStyle(
+              color: Colors.white,
+              fontSize: 8,
+              fontWeight: FontWeight.w700,
+              shadows: [Shadow(color: Colors.black, blurRadius: 2)]),
+        ),
+        textDirection: TextDirection.ltr,
+        maxLines: 1,
+        ellipsis: '…',
+      )..layout(maxWidth: 100);
+      label.paint(canvas, Offset(center.dx - label.width / 2, center.dy + 10));
+      final population = TextPainter(
+        text: TextSpan(
+          text: '👥 ${city.population}',
+          style: const TextStyle(color: Color(0xfff7e9bd), fontSize: 7),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      population.paint(
+          canvas, Offset(center.dx - population.width / 2, center.dy + 20));
+    }
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(covariant _WorldMapPainter oldDelegate) => true;
 }
 

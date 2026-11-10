@@ -149,10 +149,214 @@ class CityFaction {
       );
 }
 
+class WorldSettlementState {
+  WorldSettlementState({
+    required this.name,
+    required this.kind,
+    required this.populationThreshold,
+    required this.x,
+    required this.y,
+    this.unlocked = false,
+    this.population = 0,
+    this.treasury = 0,
+    this.food = 0,
+    this.materials = 0,
+    this.goods = 0,
+    this.army = 0,
+    this.tradeVolume = 0,
+    this.foundedYear = 0,
+    this.stability = .6,
+  });
+
+  final String name;
+  final String kind;
+  final int populationThreshold;
+  final double x, y;
+  bool unlocked;
+  int population;
+  double treasury, food, materials, goods, army, tradeVolume;
+  int foundedYear;
+  double stability;
+
+  bool get isCapital => kind == 'capital';
+
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'kind': kind,
+        'populationThreshold': populationThreshold,
+        'x': x,
+        'y': y,
+        'unlocked': unlocked,
+        'population': population,
+        'treasury': treasury,
+        'food': food,
+        'materials': materials,
+        'goods': goods,
+        'army': army,
+        'tradeVolume': tradeVolume,
+        'foundedYear': foundedYear,
+        'stability': stability,
+      };
+
+  factory WorldSettlementState.fromJson(Map data) => WorldSettlementState(
+        name: _text(data['name'], 'Поселение'),
+        kind: _text(data['kind'], 'town'),
+        populationThreshold: _int(data['populationThreshold'], 0),
+        x: _double(data['x'], .5).clamp(0, 1),
+        y: _double(data['y'], .5).clamp(0, 1),
+        unlocked: data['unlocked'] == true,
+        population: _int(data['population'], 0).clamp(0, 1 << 31),
+        treasury: _double(data['treasury'], 0),
+        food: _double(data['food'], 0),
+        materials: _double(data['materials'], 0),
+        goods: _double(data['goods'], 0),
+        army: _double(data['army'], 0),
+        tradeVolume: _double(data['tradeVolume'], 0),
+        foundedYear: _int(data['foundedYear'], 0),
+        stability: _double(data['stability'], .6).clamp(0, 1),
+      );
+
+  static List<WorldSettlementState> seeded() => [
+        WorldSettlementState(
+          name: 'Первый двор',
+          kind: 'capital',
+          populationThreshold: 0,
+          x: .22,
+          y: .52,
+          unlocked: true,
+          population: 8,
+          treasury: 110,
+          food: 45,
+          materials: 28,
+          goods: 18,
+          army: 3,
+          foundedYear: 1,
+        ),
+        WorldSettlementState(
+            name: 'Зелёная долина',
+            kind: 'farm',
+            populationThreshold: 15,
+            x: .48,
+            y: .24),
+        WorldSettlementState(
+            name: 'Речной порт',
+            kind: 'port',
+            populationThreshold: 30,
+            x: .73,
+            y: .40),
+        WorldSettlementState(
+            name: 'Северный округ',
+            kind: 'town',
+            populationThreshold: 50,
+            x: .38,
+            y: .79),
+        WorldSettlementState(
+            name: 'Горный край',
+            kind: 'industry',
+            populationThreshold: 75,
+            x: .82,
+            y: .78),
+        WorldSettlementState(
+            name: 'Новый центр',
+            kind: 'metro',
+            populationThreshold: 100,
+            x: .57,
+            y: .58),
+      ];
+}
+
+class ForeignNationState {
+  ForeignNationState({
+    required this.name,
+    required this.population,
+    required this.territory,
+    required this.relation,
+    required this.treasury,
+    required this.food,
+    required this.materials,
+    required this.goods,
+    required this.army,
+    this.technologyLevel = 1,
+  });
+
+  final String name;
+  int population, territory, army, technologyLevel;
+  double relation, treasury, food, materials, goods;
+  bool get allied => relation >= 80;
+
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'population': population,
+        'territory': territory,
+        'relation': relation,
+        'treasury': treasury,
+        'food': food,
+        'materials': materials,
+        'goods': goods,
+        'army': army,
+        'technologyLevel': technologyLevel,
+      };
+
+  factory ForeignNationState.fromJson(Map data) => ForeignNationState(
+        name: _text(data['name'], 'Соседняя держава'),
+        population: _int(data['population'], 1000).clamp(1, 1 << 31),
+        territory: _int(data['territory'], 1).clamp(1, 1 << 31),
+        relation: _double(data['relation'], 40).clamp(0, 100),
+        treasury: _double(data['treasury'], 500),
+        food: _double(data['food'], 400),
+        materials: _double(data['materials'], 260),
+        goods: _double(data['goods'], 180),
+        army: _int(data['army'], 40).clamp(0, 1 << 31),
+        technologyLevel: _int(data['technologyLevel'], 1).clamp(1, 6),
+      );
+
+  static List<ForeignNationState> seeded() => [
+        ForeignNationState(
+          name: 'Северная лига',
+          population: 2800,
+          territory: 12,
+          relation: 42,
+          treasury: 1800,
+          food: 1200,
+          materials: 740,
+          goods: 520,
+          army: 145,
+          technologyLevel: 3,
+        ),
+        ForeignNationState(
+          name: 'Речной союз',
+          population: 2100,
+          territory: 9,
+          relation: 55,
+          treasury: 1450,
+          food: 900,
+          materials: 620,
+          goods: 850,
+          army: 105,
+          technologyLevel: 3,
+        ),
+        ForeignNationState(
+          name: 'Горные княжества',
+          population: 1650,
+          territory: 14,
+          relation: 30,
+          treasury: 1250,
+          food: 720,
+          materials: 940,
+          goods: 430,
+          army: 128,
+          technologyLevel: 2,
+        ),
+      ];
+}
+
 /// Citywide systems ported from the source game's education, health,
 /// government, culture, diplomacy, era and world-network updates.
 class CivilizationSimulation {
-  CivilizationSimulation({Random? random}) : _random = random ?? Random();
+  CivilizationSimulation({Random? random}) : _random = random ?? Random() {
+    worldSettlements.addAll(WorldSettlementState.seeded());
+    foreignNations.addAll(ForeignNationState.seeded());
+  }
 
   final Random _random;
   int technologyLevel = 1;
@@ -195,6 +399,8 @@ class CivilizationSimulation {
   final Set<String> civicBuildings = {};
   final List<CityFaction> factions = [];
   final List<HouseholdState> households = [];
+  final List<WorldSettlementState> worldSettlements = [];
+  final List<ForeignNationState> foreignNations = [];
   final Map<String, int> milestones = {};
   double _yearTimer = 0;
   double _educationTimer = 0;
@@ -277,6 +483,8 @@ class CivilizationSimulation {
         'worldTradeVolume': worldTradeVolume,
         'migrations': migrations,
         'foundedSettlements': foundedSettlements,
+        'worldSettlements': worldSettlements.map((city) => city.toJson()).toList(),
+        'foreignNations': foreignNations.map((state) => state.toJson()).toList(),
         'diplomacy': diplomacy,
         'civicBuildings': civicBuildings.toList(),
         'factions': factions.map((faction) => faction.toJson()).toList(),
@@ -363,6 +571,20 @@ class CivilizationSimulation {
       state._nextHomeId = max(state._nextHomeId,
           state.households.fold(1, (next, home) => max(next, home.id + 1)));
     }
+    if (data['worldSettlements'] is List) {
+      state.worldSettlements
+        ..clear()
+        ..addAll((data['worldSettlements'] as List)
+            .whereType<Map>()
+            .map(WorldSettlementState.fromJson));
+    }
+    if (data['foreignNations'] is List) {
+      state.foreignNations
+        ..clear()
+        ..addAll((data['foreignNations'] as List)
+            .whereType<Map>()
+            .map(ForeignNationState.fromJson));
+    }
     if (data['diplomacy'] is Map) {
       state.diplomacy
         ..clear()
@@ -378,6 +600,10 @@ class CivilizationSimulation {
         'Речной союз': 55,
         'Горные княжества': 30,
       });
+    }
+    for (final foreign in state.foreignNations) {
+      final relation = state.diplomacy[foreign.name];
+      if (relation != null) foreign.relation = relation;
     }
     if (data['civicBuildings'] is List) {
       state.civicBuildings
@@ -648,25 +874,166 @@ class CivilizationSimulation {
     }
     if (_tradeTimer >= 12) {
       _tradeTimer %= 12;
-      final cities = [0, 15, 30, 50, 75, 100]
-          .where((threshold) => residents.length >= threshold)
-          .length;
-      foundedSettlements = cities.clamp(1, 6);
-      if (cities > 1) {
-        final gain = max(1,
-            ((market.food + market.materials + market.goods) * .025).round());
-        worldTradeVolume += gain;
-        market.tradeVolume += gain;
-        if (_random.nextDouble() < .22) {
-          migrations++;
-          events.add('🚶 Переселенцы прибыли в ${_settlementName(cities)}');
-        }
-      }
+      _updateWorldNetwork(residents, market, events);
     }
     _updateEra(residents.length, events);
     _updateNation(dt, residents, market, events);
     _sickCount = residents.where((r) => r.sick).length;
     return events;
+  }
+
+  void _updateWorldNetwork(List<ResidentAgent> residents, MarketState market,
+      List<String> events) {
+    for (var index = 0; index < worldSettlements.length; index++) {
+      final city = worldSettlements[index];
+      if (!city.unlocked && residents.length >= city.populationThreshold) {
+        city
+          ..unlocked = true
+          ..population = max(3, (residents.length * (.12 + index * .035)).round())
+          ..treasury = 45 + residents.length * .7
+          ..food = 20 + city.population * (city.kind == 'farm' ? 3.2 : 1.6)
+          ..materials = 8 + city.population * .55
+          ..goods = 5 + city.population * .45
+          ..army = max(1, city.population ~/ 24).toDouble()
+          ..foundedYear = year;
+        events.add('🏙️ Основано поселение «${city.name}»');
+      }
+      if (!city.unlocked) continue;
+
+      if (city.isCapital) {
+        city
+          ..population = residents.length
+          ..treasury = market.treasury
+          ..food = market.food
+          ..materials = market.materials
+          ..goods = market.goods
+          ..army = army.toDouble();
+        continue;
+      }
+
+      final population = city.population.toDouble();
+      var foodMade = 0.0, materialsMade = 0.0, goodsMade = 0.0;
+      switch (city.kind) {
+        case 'farm':
+          foodMade = population * .18;
+          break;
+        case 'port':
+          goodsMade = population * .14;
+          foodMade = population * .035;
+          break;
+        case 'industry':
+          materialsMade = population * .13;
+          goodsMade = population * .045;
+          break;
+        case 'metro':
+          foodMade = population * .07;
+          materialsMade = population * .055;
+          goodsMade = population * .09;
+          break;
+        default:
+          foodMade = population * .07;
+          goodsMade = population * .045;
+      }
+      city
+        ..food = max(0, city.food + foodMade - population * .105)
+        ..materials = max(0, city.materials + materialsMade - population * .018)
+        ..goods = max(0, city.goods + goodsMade - population * .028);
+      final foodExport = min(max(0, city.food - population * .7), population * .06);
+      final materialExport =
+          min(max(0, city.materials - population * .4), population * .035);
+      final goodsExport = min(max(0, city.goods - population * .35), population * .04);
+      final exportValue = foodExport * market.foodPrice +
+          materialExport * market.materialPrice +
+          goodsExport * market.goodsPrice;
+      final maintenance = city.army * .035 + population * .018;
+      city
+        ..food -= foodExport
+        ..materials -= materialExport
+        ..goods -= goodsExport
+        ..tradeVolume += foodExport + materialExport + goodsExport
+        ..treasury = max(0, city.treasury + exportValue * .18 + population * .025 - maintenance)
+        ..stability = (city.stability +
+                (city.food > population * .5 ? .012 : -.035))
+            .clamp(.08, 1)
+            .toDouble();
+      final exportTotal = foodExport + materialExport + goodsExport;
+      worldTradeVolume += exportTotal;
+      market.tradeVolume += exportTotal;
+      market.food = min(9999, market.food + foodExport * .12);
+      market.materials = min(9999, market.materials + materialExport * .1);
+      market.goods = min(9999, market.goods + goodsExport * .12);
+
+      if (city.stability > .52 &&
+          city.food > population * .8 &&
+          city.treasury > population * 2 &&
+          _random.nextDouble() < .38) {
+        city.population++;
+      } else if (city.stability < .25 &&
+          city.population > 3 &&
+          _random.nextDouble() < .2) {
+        city.population--;
+        events.add('📉 В «${city.name}» жители уезжают из-за нехватки запасов');
+      }
+      if (city.army < city.population * .08 && city.treasury > 180) {
+        city
+          ..army += 1
+          ..treasury -= 18;
+      }
+    }
+
+    _simulateForeignNations(market);
+
+    foundedSettlements = worldSettlements.where((city) => city.unlocked).length;
+    if (foundedSettlements > 1 && _random.nextDouble() < .22) {
+      final destinations = worldSettlements
+          .where((city) => city.unlocked && !city.isCapital)
+          .toList();
+      if (destinations.isNotEmpty) {
+        final destination = destinations[_random.nextInt(destinations.length)];
+        destination.population++;
+        migrations++;
+        events.add('🚶 Переселенцы прибыли в ${destination.name}');
+      }
+    }
+  }
+
+  void _simulateForeignNations(MarketState market) {
+    for (final state in foreignNations) {
+      final population = state.population.toDouble();
+      state
+        ..food = max(0, state.food + population * .045 - population * .034)
+        ..materials = max(0, state.materials + population * .014 - population * .012)
+        ..goods = max(0, state.goods + population * .018 - population * .016)
+        ..treasury = max(
+            0,
+            state.treasury +
+                population * .032 +
+                state.goods * .008 -
+                state.army * .055 -
+                population * .012);
+      if (state.food < population * .22) {
+        state.population = max(1, state.population - 1);
+      } else if (state.food > population * .7 &&
+          state.treasury > population * .6 &&
+          _random.nextDouble() < .28) {
+        state.population++;
+      }
+      if (state.army < state.population * .09 &&
+          state.treasury > 240 &&
+          _random.nextDouble() < .25) {
+        state.army++;
+        state.treasury -= 24;
+      }
+      if (state.allied && state.goods > state.population * .08) {
+        final export = min(state.goods - state.population * .04,
+            state.population * .018);
+        state.goods -= export;
+        market.goods = min(9999, market.goods + export);
+        market.tradeVolume += export;
+        worldTradeVolume += export;
+        state.treasury += export * market.goodsPrice * .12;
+      }
+    }
   }
 
   void _updateResident(ResidentAgent r, double dt, List<ResidentSite> sites,
@@ -926,6 +1293,10 @@ class CivilizationSimulation {
       MarketState market, List<String> events) {
     for (final key in diplomacy.keys.toList()) {
       diplomacy[key] = diplomacy[key]!.clamp(0, 100);
+    }
+    for (final foreign in foreignNations) {
+      final relation = diplomacy[foreign.name];
+      if (relation != null) foreign.relation = relation;
     }
     if (army > 0) market.treasury = max(0, market.treasury - dt * army * .002);
   }
@@ -1323,6 +1694,8 @@ class CivilizationSimulation {
         diplomacy.keys.elementAt(_diplomacyIndex++ % diplomacy.length);
     market.treasury -= 12;
     diplomacy[partner] = min(100, diplomacy[partner]! + 12);
+    final foreign = foreignNations.where((state) => state.name == partner).firstOrNull;
+    if (foreign != null) foreign.relation = diplomacy[partner]!;
     prestige += 2;
     return diplomacy[partner]! >= 80
         ? '🤝 Заключён союз с державой «$partner»'
@@ -1335,21 +1708,37 @@ class CivilizationSimulation {
     if (market.treasury < 20) return 'Для похода нужно 20 монет';
     market.treasury -= 20;
     campaigns++;
+    final rival = foreignNations.isEmpty
+        ? null
+        : foreignNations[rng.nextInt(foreignNations.length)];
     final power = army + technologyLevel * 2 + prestige * .04;
-    final difficulty = 7 + territory * 2 + rng.nextDouble() * 12;
+    final difficulty = 6 + territory * .8 + (rival?.army ?? 0) * .12 + rng.nextDouble() * 8;
     if (power >= difficulty) {
       victories++;
       territory++;
       prestige += 8;
       army = max(1, army - 1);
-      final reward = 10 + rng.nextInt(16);
+      if (rival != null) {
+        rival.territory = max(1, rival.territory - 1);
+        rival.army = max(0, rival.army - max(1, (rival.army * .08).ceil()));
+        rival.treasury = max(0, rival.treasury - 35);
+        rival.relation = max(0, rival.relation - 10);
+        diplomacy[rival.name] = rival.relation;
+      }
+      final reward = 10 + rng.nextInt(16) + min(25, (rival?.treasury ?? 0).floor());
       market.treasury += reward;
-      return '🏳️ Победа! Земли расширены, казна получила $reward монет';
+      return '🏳️ Победа над державой «${rival?.name ?? 'соседом'}»! Территория расширена, казна получила $reward монет';
     }
     defeats++;
     prestige = max(0, prestige - 3);
     army = max(0, army - max(1, (army * .25).ceil()));
-    return '⚔️ Поход завершился отступлением; армия понесла потери';
+    if (rival != null) {
+      rival
+        ..army = max(0, rival.army - 1)
+        ..relation = max(0, rival.relation - 3);
+      diplomacy[rival.name] = rival.relation;
+    }
+    return '⚔️ Поход против «${rival?.name ?? 'соседа'}» завершился отступлением; армия понесла потери';
   }
 
   void setTaxRate(MarketState market, double rate) {
@@ -1387,15 +1776,6 @@ class CivilizationSimulation {
         'Врач' || 'Учитель' || 'Спасатель' => .22,
         _ => .13,
       };
-
-  static String _settlementName(int index) => const [
-        'Первый двор',
-        'Зелёная долина',
-        'Речной порт',
-        'Северный округ',
-        'Горный край',
-        'Новый центр',
-      ][index.clamp(0, 5)];
 
   static bool _has(String value, List<String> parts) =>
       parts.any(value.contains);
