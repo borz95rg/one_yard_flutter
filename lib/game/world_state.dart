@@ -12,6 +12,7 @@ class WorldState {
     required this.weatherTimer,
     required this.currentEraIndex,
     required this.nature,
+    this.natureEventTimer = 0,
   });
 
   static const int seasonCount = 4;
@@ -35,6 +36,7 @@ class WorldState {
   final double weatherTimer;
   final int currentEraIndex;
   final Map<String, double> nature;
+  final double natureEventTimer;
 
   factory WorldState.initial() => WorldState(
         seasonIndex: 0,
@@ -44,6 +46,7 @@ class WorldState {
         weatherTimer: 0,
         currentEraIndex: 0,
         nature: Map.unmodifiable(defaultNature),
+        natureEventTimer: 0,
       );
 
   /// Maps only fields verified in saveYard()/loadYard() of HTML v19.
@@ -65,6 +68,7 @@ class WorldState {
       weatherTimer: _nonNegative(legacy['weatherTimer']),
       currentEraIndex: _integer(legacy['currentEraIndex'], fallback: 0).clamp(0, 5).toInt(),
       nature: Map.unmodifiable(nature),
+      natureEventTimer: _nonNegative(legacy['natureEventTimer']),
     );
   }
 
@@ -79,6 +83,7 @@ class WorldState {
         'weatherTimer': weatherTimer,
         'currentEraIndex': currentEraIndex,
         'nature': nature,
+        'natureEventTimer': natureEventTimer,
       };
 
   static int _integer(Object? value, {required int fallback}) =>

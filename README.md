@@ -46,6 +46,25 @@ This is an incremental migration foundation. It does not replace or modify
 - This is data migration only: season progression, weather selection, harvests,
   disasters and ecology simulation are not ported yet.
 
+### Stage 5 — season, weather and ecology simulation slice
+
+- Added `NatureSimulation`, a data-only port of the source HTML
+  `updateNatureSystems(dt)` rules. It advances seasons every 55 simulation
+  seconds, updates weather every 18 seconds, and checks natural hazards every
+  38 seconds.
+- Preserves source formulas for summer/autumn harvest, winter food consumption,
+  forest/wildlife recovery, settlement pollution pressure, rain/snow soil gain,
+  drought damage, flood/storm/wildfire counters and food/morale effects.
+- Randomness is injectable so behavior can be tested deterministically. The
+  simulation returns updated state, food total, morale delta and event strings;
+  the Flame/UI layer must apply those results to residents and display events.
+- Weather particles and rendering are intentionally not part of this domain
+  module. `natureEventTimer` is retained in the Flutter state; the HTML save
+  does not persist that timer, so imported legacy saves start it at zero.
+- Added deterministic tests for season transition/harvest, winter/year rollover,
+  drought behavior and invalid delta time. Tests are authored but not executed
+  here because Flutter/Dart SDK is unavailable.
+
 ## UI direction confirmed
 
 Use a modern isometric city-builder layout: isometric world view; compact top
