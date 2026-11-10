@@ -400,7 +400,7 @@ class SettlementMap extends Component {
             row >= 0 &&
             row < rows &&
             kind >= 0 &&
-            kind < 11) {
+            kind < 12) {
           restored.add(_Building(col, row, kind,
               visible:
                   item['visible'] is bool ? item['visible'] as bool : true));
@@ -525,12 +525,13 @@ class SettlementMap extends Component {
 
   bool placeBuilding(GridCell cell, int kind) {
     if (kind < 0 ||
-        kind > 10 ||
+        kind > 11 ||
         _buildings.any((b) => b.column == cell.column && b.row == cell.row)) {
       return false;
     }
     if (kind == 8 && cell.column < 20) return false;
-    final costs = [8.0, 12, 15, 20, 7, 22, 30, 4, 18, 20, 16];
+    if (kind == 11 && !_hasAdjacentRoad(cell.column, cell.row)) return false;
+    final costs = [8.0, 12, 15, 20, 7, 22, 30, 4, 18, 20, 16, 8];
     final cost = costs[kind];
     if (market.materials < cost) {
       return false;
@@ -544,6 +545,10 @@ class SettlementMap extends Component {
     return true;
   }
 
+  bool _hasAdjacentRoad(int column, int row) => _buildings.any((building) =>
+      building.kind == 7 &&
+      (building.column - column).abs() + (building.row - row).abs() == 1);
+
   static String _buildingName(int kind) => const [
         'жилой дом',
         'ферма',
@@ -556,6 +561,7 @@ class SettlementMap extends Component {
         'рыбная пристань',
         'животноводческая ферма',
         'склад',
+        'автобусная остановка',
       ][kind];
 
   static String _roleForKind(int kind) => switch (kind) {
@@ -569,6 +575,7 @@ class SettlementMap extends Component {
         8 => 'рыболовство',
         9 => 'животноводство',
         10 => 'склад',
+        11 => 'автобусная остановка',
         _ => 'совет',
       };
 
@@ -738,6 +745,7 @@ class SettlementMap extends Component {
         .map((building) => cellCenter(building.column, building.row))
         .map((point) => Offset(point.x, point.y))
         .toList(growable: false);
+    final busRoutePoints = _busRoutePoints();
     final colors = [
       const Color(0xffbd594a),
       const Color(0xff6d9db7),
@@ -747,10 +755,15 @@ class SettlementMap extends Component {
     ];
     const artWidth = 1195.0, artHeight = 600.0;
     for (var i = 0; i < count; i++) {
-      final usesPlayerRoads = playerRoadPoints.length > 1;
-      final route = usesPlayerRoads
-          ? playerRoadPoints
-          : _trafficRoutes[i % _trafficRoutes.length];
+      final bus = (busRoutePoints.length > 1 && i % 5 == 0) ||
+          (stage > .68 && i % 7 == 0);
+      final usesBusStops = bus && busRoutePoints.length > 1;
+      final usesPlayerRoads = !usesBusStops && playerRoadPoints.length > 1;
+      final route = usesBusStops
+          ? busRoutePoints
+          : usesPlayerRoads
+              ? playerRoadPoints
+              : _trafficRoutes[i % _trafficRoutes.length];
       final direction = i.isEven ? 1.0 : -1.0;
       final cycle = (_timeOfDay * 24 * 2.4 * direction + i * 1.73) % 18;
       final progress = ((cycle + 18) % 18) / 18;
@@ -766,7 +779,6 @@ class SettlementMap extends Component {
       final tangentY =
           usesPlayerRoads ? sample.$2.dy : sample.$2.dy * 936 / artHeight;
       final angle = math.atan2(tangentY, tangentX);
-      final bus = stage > .68 && i % 7 == 0;
       final length = bus ? 28.0 : 17.0;
       final height = bus ? 9.0 : 7.0;
       canvas.save();
@@ -870,6 +882,82 @@ class SettlementMap extends Component {
       currentKey = previous[currentKey];
     }
     return route.reversed.toList(growable: false);
+  }
+
+  List<Offset> _busRoutePoints() {
+    final stops = _buildings.where((building) => building.kind == 11).toList()
+      ..sort((a, b) =>
+          (a.row * columns + a.column).compareTo(b.row * columns + b.column));
+    if (stops.length < 2) return const [];
+    final roads = <int, _Building>{
+      for (final road in _buildings.where((building) => building.kind == 7))
+        road.row * columns + road.column: road,
+    };
+    int? attachedRoadKey(_Building stop) {
+      for (final (dc, dr) in const [(1, 0), (-1, 0), (0, 1), (0, -1)]) {
+        final column = stop.column + dc, row = stop.row + dr;
+        if (column < 0 || column >= columns || row < 0 || row >= rows) continue;
+        final roadKey = row * columns + column;
+        if (roads.containsKey(roadKey)) return roadKey;
+      }
+      return null;
+    }
+
+    List<int> roadPath(int start, int destination) {
+      if (!roads.containsKey(start) || !roads.containsKey(destination)) {
+        return const [];
+      }
+      final queue = <int>[start];
+      final previous = <int, int?>{start: null};
+      for (var cursor = 0; cursor < queue.length; cursor++) {
+        final key = queue[cursor];
+        if (key == destination) break;
+        final row = key ~/ columns, column = key % columns;
+        for (final (dc, dr) in const [(1, 0), (-1, 0), (0, 1), (0, -1)]) {
+          final nextColumn = column + dc, nextRow = row + dr;
+          if (nextColumn < 0 ||
+              nextColumn >= columns ||
+              nextRow < 0 ||
+              nextRow >= rows) {
+            continue;
+          }
+          final nextKey = nextRow * columns + nextColumn;
+          if (roads.containsKey(nextKey) && !previous.containsKey(nextKey)) {
+            previous[nextKey] = key;
+            queue.add(nextKey);
+          }
+        }
+      }
+      if (!previous.containsKey(destination)) return const [];
+      final path = <int>[];
+      int? key = destination;
+      while (key != null) {
+        path.add(key);
+        key = previous[key];
+      }
+      return path.reversed.toList(growable: false);
+    }
+
+    final roadKeys = stops.map(attachedRoadKey).toList();
+    if (roadKeys.any((key) => key == null)) return const [];
+    final points = <Offset>[];
+    for (var i = 0; i < stops.length; i++) {
+      final from = stops[i], to = stops[(i + 1) % stops.length];
+      final path = roadPath(roadKeys[i]!, roadKeys[(i + 1) % stops.length]!);
+      if (path.isEmpty) return const [];
+      if (points.isEmpty) {
+        final position = cellCenter(from.column, from.row);
+        points.add(Offset(position.x, position.y));
+      }
+      for (final roadKey in path) {
+        final road = roads[roadKey]!;
+        final position = cellCenter(road.column, road.row);
+        points.add(Offset(position.x, position.y));
+      }
+      final stopPosition = cellCenter(to.column, to.row);
+      points.add(Offset(stopPosition.x, stopPosition.y));
+    }
+    return points.length > 1 ? points : const [];
   }
 
   static (Offset, Offset) _sampleRoute(List<Offset> points, double progress) {
@@ -1067,6 +1155,30 @@ class SettlementMap extends Component {
           Paint()
             ..color = const Color(0xffe5d8a6)
             ..strokeWidth = 2);
+      return;
+    }
+    if (b.kind == 11) {
+      canvas.drawLine(
+          Offset(c.x, c.y + 8),
+          Offset(c.x, c.y - 14),
+          Paint()
+            ..color = const Color(0xffd7d5c8)
+            ..strokeWidth = 2);
+      final sign = RRect.fromRectAndRadius(
+          Rect.fromLTWH(c.x - 10, c.y - 24, 20, 14), const Radius.circular(3));
+      canvas.drawRRect(sign, Paint()..color = const Color(0xff246b84));
+      canvas.drawRRect(
+          sign,
+          Paint()
+            ..color = const Color(0xffc7edf0)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1);
+      canvas.drawRect(Rect.fromLTWH(c.x - 5, c.y - 21, 10, 4),
+          Paint()..color = const Color(0xfff2d778));
+      canvas.drawCircle(Offset(c.x - 5, c.y - 15), 1,
+          Paint()..color = const Color(0xffeaf7f7));
+      canvas.drawCircle(Offset(c.x + 5, c.y - 15), 1,
+          Paint()..color = const Color(0xffeaf7f7));
       return;
     }
     if (b.kind == 4) {
@@ -1959,6 +2071,7 @@ class _BuildBar extends StatelessWidget {
     (Icons.set_meal, 'Рыболовство'),
     (Icons.pets, 'Скот'),
     (Icons.warehouse, 'Склады'),
+    (Icons.directions_bus, 'Остановки'),
   ];
   @override
   Widget build(BuildContext context) => _GlassPanel(
