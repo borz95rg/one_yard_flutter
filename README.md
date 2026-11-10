@@ -65,6 +65,15 @@ This is an incremental migration foundation. It does not replace or modify
   drought behavior and invalid delta time. Tests are authored but not executed
   here because Flutter/Dart SDK is unavailable.
 
+
+### Stage 6 — isometric grid geometry
+
+- Added dependency-free `IsometricGrid` geometry for a bounded tile map.
+- Converts tile coordinates to isometric world-space centers and back.
+- Resolves a world-space tap to a tile only when it falls inside that tile's diamond.
+- Validates map and tile dimensions; includes round-trip and hit-test test cases.
+- This is the mathematical foundation only: no Flame `GameWidget`, painter, sprites, gesture wiring or playable map has been added yet.
+
 ## UI direction confirmed
 
 Use a modern isometric city-builder layout: isometric world view; compact top
