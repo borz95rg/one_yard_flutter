@@ -14,8 +14,7 @@ class CameraPoint {
       CameraPoint(x + other.x, y + other.y);
   CameraPoint operator -(CameraPoint other) =>
       CameraPoint(x - other.x, y - other.y);
-  CameraPoint operator *(double factor) =>
-      CameraPoint(x * factor, y * factor);
+  CameraPoint operator *(double factor) => CameraPoint(x * factor, y * factor);
 }
 
 class ViewportCamera {
@@ -24,7 +23,7 @@ class ViewportCamera {
     double zoom = 1,
     this.minZoom = 0.45,
     this.maxZoom = 3.5,
-  })  : zoom = zoom.clamp(minZoom, maxZoom).toDouble() {
+  }) : zoom = zoom.clamp(minZoom, maxZoom).toDouble() {
     if (minZoom <= 0 || maxZoom < minZoom) {
       throw ArgumentError('Invalid zoom limits');
     }

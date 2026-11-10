@@ -74,22 +74,27 @@ This is an incremental Flutter migration. It does not replace or modify
 - Validates map and tile dimensions; includes round-trip and hit-test test cases.
 - This is the mathematical foundation only: no Flame `GameWidget`, painter, sprites, gesture wiring or playable map has been added yet.
 
-### Stage 7 — first Flame settlement scene
+### Stage 7 — first Flame settlement scene and city-builder layout
 
 - Added a runnable Flutter Android app and Flame `GameWidget`.
 - Draws an isometric settlement with terrain, roads, a river, trees, houses, a
   central fountain and resident figures.
-- Added a responsive resource bar, settlement/ecology panels, and a bottom
-  construction toolbar. Selecting a tool places another sample building.
+- Added the reference layout: top resource/time bar and category navigation;
+  left resident, economy and ecology panels; right district legend and mini-map;
+  event and technology cards; and an eight-button construction toolbar.
+- The panels currently show mock values. Selecting a construction tool adds a
+  sample building to the rendered map; it does not yet check costs, occupancy,
+  or connect to the migrated economy.
 - One-finger drag pans the camera; two-finger gestures pan and zoom.
 - Added Android project scaffolding and a GitHub Actions workflow. Pushes to
   `main` or `master`, or a manual workflow run, build a release APK and store it
   as the `one-yard-android-apk` artifact.
 
-This is the first playable rendering shell, not the complete HTML-game port:
-toolbar construction currently adds visual sample buildings, and displayed
-population/resource values are sample UI data. The nature and save modules are
-not wired into this screen yet.
+This is a visual and input prototype, not the complete HTML-game port. The
+reference composition is present, but map artwork is currently vector-drawn,
+not photo-realistic. Population/resource values are mock UI data; construction
+adds sample buildings without costs or placement validation. The nature and
+save modules are not wired into this screen yet.
 
 ## UI direction confirmed
 
