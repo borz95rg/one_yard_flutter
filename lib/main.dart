@@ -2,7 +2,11 @@ import 'dart:math' as math;
 
 import 'package:flame/components.dart';
 import 'package:flame/game.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+
+import 'game/isometric_grid.dart';
+import 'game/resident_simulation.dart';
 
 void main() => runApp(const OneYardApp());
 
@@ -66,7 +70,8 @@ class _SettlementScreenState extends State<SettlementScreen> {
                 left: 12,
                 right: 12,
                 top: 8,
-                child: _TopBar(compact: compact),
+                child:
+                    _TopBar(compact: compact, population: game.residentCount),
               ),
               if (!compact)
                 Positioned(
@@ -74,7 +79,7 @@ class _SettlementScreenState extends State<SettlementScreen> {
                     top: 122,
                     bottom: 118,
                     width: 222,
-                    child: const _SidePanel()),
+                    child: _SidePanel(population: game.residentCount)),
               if (!compact)
                 const Positioned(
                     right: 12, top: 122, width: 218, child: _RightPanel()),
@@ -110,6 +115,8 @@ class _SettlementScreenState extends State<SettlementScreen> {
 
 class SettlementGame extends FlameGame {
   late final SettlementMap map;
+  final ValueNotifier<int> residentCount = ValueNotifier<int>(8);
+  double _refreshTimer = 0;
 
   @override
   Color backgroundColor() => const Color(0xff183b3b);
@@ -119,6 +126,22 @@ class SettlementGame extends FlameGame {
     camera.viewfinder.zoom = 0.82;
     map = SettlementMap();
     world.add(map);
+  }
+
+  @override
+  void update(double dt) {
+    super.update(dt);
+    _refreshTimer += dt;
+    if (_refreshTimer >= 0.5 && isLoaded) {
+      _refreshTimer = 0;
+      residentCount.value = map.people.residents.length;
+    }
+  }
+
+  @override
+  void onRemove() {
+    residentCount.dispose();
+    super.onRemove();
   }
 
   void pan(double dx, double dy) {
@@ -144,6 +167,23 @@ class SettlementMap extends Component {
   static const rows = 24;
   static const tileW = 68.0;
   static const tileH = 36.0;
+  double _timeOfDay = 0.35;
+  late final ResidentSimulation people = ResidentSimulation.initial(
+    sites: [
+      for (final building in _buildings)
+        ResidentSite(
+          position: IsometricPoint(
+            (building.column - building.row) * tileW / 2,
+            (building.column + building.row) * tileH / 2,
+          ),
+          role: _roleForKind(building.kind),
+        ),
+      ResidentSite(position: _center(23, 12).asPoint(), role: 'источник воды'),
+      ResidentSite(position: _center(5, 18).asPoint(), role: 'парк отдыха'),
+    ],
+    width: tileW * columns,
+    height: tileH * rows,
+  );
   final List<_Building> _buildings = [
     const _Building(13, 10, 3),
     const _Building(10, 12, 0),
@@ -159,14 +199,34 @@ class SettlementMap extends Component {
 
   void addBuilding(int kind) {
     final index = _buildings.length;
-    _buildings
-        .add(_Building(3 + (index * 7) % 22, 4 + (index * 5) % 16, kind % 4));
+    final building =
+        _Building(3 + (index * 7) % 22, 4 + (index * 5) % 16, kind % 4);
+    _buildings.add(building);
+    people.sites.add(ResidentSite(
+      position: _center(building.column, building.row).asPoint(),
+      role: _roleForKind(building.kind),
+    ));
   }
+
+  static String _roleForKind(int kind) => switch (kind) {
+        0 => 'дом',
+        1 => 'ферма',
+        2 => 'рынок',
+        _ => 'совет',
+      };
 
   Vector2 _center(int column, int row) => Vector2(
         (column - row) * tileW / 2,
         (column + row) * tileH / 2,
       );
+
+  @override
+  void update(double dt) {
+    _timeOfDay = (_timeOfDay + dt / 180) % 1;
+    final hour = (_timeOfDay * 24).floor();
+    final isNight = hour < 6 || hour >= 20;
+    people.update(dt, isNight: isNight);
+  }
 
   @override
   void render(Canvas canvas) {
@@ -338,9 +398,19 @@ class SettlementMap extends Component {
   }
 
   void _drawPeople(Canvas canvas) {
-    for (var i = 0; i < 15; i++) {
-      final c = _center(4 + (i * 11) % 19, 5 + (i * 7) % 14);
-      final bob = math.sin(i * 2.1) * 1.5;
+    for (final resident in people.residents) {
+      final c = resident.position;
+      final bob = math.sin(resident.walkPhase) * 1.5;
+      final color = switch (resident.personality) {
+        'builder' => const Color(0xffbf8c59),
+        'explorer' => const Color(0xff73ad86),
+        'mystic' => const Color(0xffa68bcc),
+        _ => const Color(0xffe4bf8e),
+      };
+      canvas.drawOval(
+          Rect.fromCenter(
+              center: Offset(c.x + 2, c.y + 4), width: 7, height: 3),
+          Paint()..color = const Color(0x550d1714));
       canvas.drawCircle(Offset(c.x, c.y - 3 + bob), 2.6,
           Paint()..color = const Color(0xffffd085));
       canvas.drawLine(
@@ -350,8 +420,7 @@ class SettlementMap extends Component {
           ),
           Offset(c.x, c.y + 4 + bob),
           Paint()
-            ..color =
-                i.isEven ? const Color(0xffb54a38) : const Color(0xff31577b)
+            ..color = color
             ..strokeWidth = 2.2
             ..strokeCap = StrokeCap.round);
     }
@@ -359,8 +428,9 @@ class SettlementMap extends Component {
 }
 
 class _TopBar extends StatelessWidget {
-  const _TopBar({required this.compact});
+  const _TopBar({required this.compact, required this.population});
   final bool compact;
+  final ValueListenable<int> population;
   @override
   Widget build(BuildContext context) => _GlassPanel(
         padding: EdgeInsets.symmetric(
@@ -384,7 +454,11 @@ class _TopBar extends StatelessWidget {
               const _Resource(icon: Icons.bolt, value: '3 240'),
               const _Resource(icon: Icons.people_alt, value: '45 230'),
             ] else
-              const _Resource(icon: Icons.people_alt, value: '72'),
+              ValueListenableBuilder<int>(
+                valueListenable: population,
+                builder: (context, count, _) =>
+                    _Resource(icon: Icons.people_alt, value: '$count'),
+              ),
             if (!compact) ...[
               const SizedBox(width: 10),
               const Icon(Icons.calendar_month, size: 19, color: Colors.white70),
@@ -472,21 +546,25 @@ class _Resource extends StatelessWidget {
 }
 
 class _SidePanel extends StatelessWidget {
-  const _SidePanel();
+  const _SidePanel({required this.population});
+  final ValueListenable<int> population;
   @override
   Widget build(BuildContext context) => SingleChildScrollView(
-          child: Column(children: const [
-        _InfoCard(title: 'ЖИТЕЛИ ГОРОДА', icon: Icons.people_alt, rows: [
-          'Население       45 230',
-          'Прирост          +245/день',
-          'Рождаемость       12.8%',
-          'Смертность         8.1%',
-          'Счастье              87%',
-          'Занятость            94%',
-          'Образование         92%',
-          'Здоровье             95%'
-        ]),
-        SizedBox(height: 9),
+          child: Column(children: [
+        ValueListenableBuilder<int>(
+            valueListenable: population,
+            builder: (context, count, _) => _InfoCard(
+                    title: 'ЖИТЕЛИ ГОРОДА',
+                    icon: Icons.people_alt,
+                    rows: [
+                      'Население        $count',
+                      'Поведение          активно',
+                      'Счастье                 68%',
+                      'Занятость           считать',
+                      'Образование            0%',
+                      'Здоровье              100%'
+                    ])),
+        const SizedBox(height: 9),
         _InfoCard(title: 'ЭКОНОМИКА', icon: Icons.paid, rows: [
           'Бюджет           258 750',
           'Доход       +12 430/день',
@@ -772,4 +850,8 @@ class _GlassPanel extends StatelessWidget {
         ),
         child: child,
       );
+}
+
+extension _Vector2IsometricPoint on Vector2 {
+  IsometricPoint asPoint() => IsometricPoint(x, y);
 }

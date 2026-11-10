@@ -92,9 +92,25 @@ This is an incremental Flutter migration. It does not replace or modify
 
 This is a visual and input prototype, not the complete HTML-game port. The
 reference composition is present, but map artwork is currently vector-drawn,
-not photo-realistic. Population/resource values are mock UI data; construction
-adds sample buildings without costs or placement validation. The nature and
-save modules are not wired into this screen yet.
+not photo-realistic. Most panel values are mock data; construction adds sample
+buildings without costs or placement validation. The nature and save modules
+are not wired into this screen yet.
+
+### Stage 8 — resident movement and basic needs
+
+- Added typed resident agents with the source game's starting population of
+  eight, personality types, age, gender, morale, health, wallet and core needs.
+- Ported the HTML movement loop: residents wander, choose a useful nearby site,
+  walk to it, spend time there and satisfy hunger, thirst or shelter needs.
+- Added the source's day/night need rate for shelter and animated residents at
+  their simulated world positions. The displayed population now comes from the
+  simulation.
+- Construction sample buttons register their resulting site as a place where
+  residents can satisfy needs.
+
+Resident state is not yet connected to families, jobs, friendships, health
+outbreaks, the market, faction systems or saved games. Those remain explicit
+porting work; this stage does not claim the feature list is complete.
 
 ## UI direction confirmed
 
