@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import 'city_economy.dart';
+import 'isometric_grid.dart';
 import 'resident_simulation.dart';
 
 class HouseholdState {
@@ -992,6 +993,7 @@ class CivilizationSimulation {
       for (final resident in members) {
         resident
           ..homeId = home.id
+          ..homePosition = IsometricPoint(home.x, home.y)
           ..propertyValue = home.value;
       }
     }

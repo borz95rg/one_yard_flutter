@@ -2,7 +2,7 @@ import 'dart:math';
 
 import 'isometric_grid.dart';
 
-enum ResidentActivity { wandering, walking, working }
+enum ResidentActivity { wandering, walking, working, atHome }
 
 class ResidentNeeds {
   ResidentNeeds(this.hunger, this.thirst, this.shelter);
@@ -76,6 +76,7 @@ class ResidentAgent {
   bool criminal = false;
   double jailed = 0;
   int? homeId;
+  IsometricPoint? homePosition;
   double propertyValue = 0;
   bool isChief = false;
   double education = 0;
@@ -83,6 +84,10 @@ class ResidentAgent {
   String? job;
   ResidentActivity activity = ResidentActivity.wandering;
   ResidentSite? target;
+  ResidentSite? workSite;
+  bool onShift = false;
+  bool travelingToWork = false;
+  bool returningHome = false;
   final friendIds = <int>[];
   final rivalIds = <int>[];
   final parentIds = <int>[];
@@ -112,6 +117,8 @@ class ResidentAgent {
         'criminal': criminal,
         'jailed': jailed,
         'homeId': homeId,
+        'homeX': homePosition?.x,
+        'homeY': homePosition?.y,
         'propertyValue': propertyValue,
         'isChief': isChief,
         'education': education,
@@ -152,6 +159,12 @@ class ResidentAgent {
       ..criminal = data['criminal'] == true
       ..jailed = _number(data['jailed'], 0)
       ..homeId = _optionalInteger(data['homeId'])
+      ..homePosition = data['homeX'] is num && data['homeY'] is num
+          ? IsometricPoint(
+              (data['homeX'] as num).toDouble(),
+              (data['homeY'] as num).toDouble(),
+            )
+          : null
       ..propertyValue = _number(data['propertyValue'], 0)
       ..isChief = data['isChief'] == true
       ..education = _number(data['education'], 0)
@@ -336,13 +349,35 @@ class ResidentSimulation {
   List<Map<String, dynamic>> toJson() =>
       residents.map((resident) => resident.toJson()).toList(growable: false);
 
-  void update(double dt, {bool isNight = false}) {
+  void update(double dt, {bool isNight = false, int hour = 12}) {
     if (!dt.isFinite || dt < 0) throw ArgumentError.value(dt, 'dt');
+    final shiftHours = hour >= 8 && hour < 18;
     for (final r in residents) {
       r.needs.hunger = _clamp(r.needs.hunger + .012 * dt);
       r.needs.thirst = _clamp(r.needs.thirst + .018 * dt);
       r.needs.shelter =
           _clamp(r.needs.shelter + .008 * (isNight ? 1.7 : 1) * dt);
+      final workingAge = r.age >= 42 && r.age < 620;
+      final hasJob = workingAge &&
+          r.job != null &&
+          !const ['Ученик', 'Малыш', 'Старейшина'].contains(r.job);
+      if (hasJob && shiftHours && !r.onShift && !r.travelingToWork) {
+        if (r.activity == ResidentActivity.atHome ||
+            (r.activity == ResidentActivity.wandering && r.target == null)) {
+          final workplace = _findWorkplace(r);
+          if (workplace != null) {
+            r
+              ..workSite = workplace
+              ..target = workplace
+              ..activity = ResidentActivity.walking
+              ..travelingToWork = true
+              ..returningHome = false;
+          }
+        }
+      } else if ((!shiftHours || !hasJob) &&
+          (r.onShift || r.travelingToWork)) {
+        _startJourneyHome(r);
+      }
       switch (r.activity) {
         case ResidentActivity.wandering:
           r.thinkTimer -= dt;
@@ -369,13 +404,27 @@ class ResidentSimulation {
           final dy = site.position.y - r.position.y;
           final distance = sqrt(dx * dx + dy * dy);
           if (distance < 18) {
-            r.activity = ResidentActivity.working;
-            r.workTimer = 2 + _rng.nextDouble() * 3;
-            site.users++;
+            if (r.returningHome) {
+              r
+                ..activity = ResidentActivity.atHome
+                ..target = null
+                ..returningHome = false;
+            } else if (r.travelingToWork) {
+              r
+                ..activity = ResidentActivity.working
+                ..travelingToWork = false
+                ..onShift = true;
+              site.users++;
+            } else {
+              r.activity = ResidentActivity.working;
+              r.workTimer = 2 + _rng.nextDouble() * 3;
+              site.users++;
+            }
           } else {
             _move(r, dx / distance * 55 * dt, dy / distance * 55 * dt);
           }
         case ResidentActivity.working:
+          if (r.onShift) break;
           r.workTimer -= dt;
           final site = r.target;
           if (r.workTimer <= 0 || site == null || site.disabled) {
@@ -387,6 +436,8 @@ class ResidentSimulation {
             r.activity = ResidentActivity.wandering;
             r.thinkTimer = .4 + _rng.nextDouble() * .6;
           }
+        case ResidentActivity.atHome:
+          break;
       }
       r.walkPhase = r.activity == ResidentActivity.walking
           ? r.walkPhase + dt * 16
@@ -431,6 +482,56 @@ class ResidentSimulation {
       }
     }
     return best;
+  }
+
+  ResidentSite? _findWorkplace(ResidentAgent resident) {
+    final job = resident.job?.toLowerCase() ?? '';
+    final preferred = switch (job) {
+      'фермер' => const ['ферма', 'склад'],
+      'строитель' || 'инженер' => const ['производство', 'мастерская', 'дорога', 'совет'],
+      'торговец' || 'курьер' => const ['рынок', 'торговля'],
+      'врач' || 'спасатель' => const ['больница', 'медпункт', 'клиника'],
+      'учитель' || 'учёный' || 'ученый' => const ['школа', 'университет', 'колледж', 'совет'],
+      'ремесленник' || 'специалист' || 'наставник' => const ['мастерская', 'рынок', 'совет', 'ферма'],
+      _ => const <String>[],
+    };
+    if (preferred.isEmpty) return null;
+    ResidentSite? best;
+    var bestScore = double.infinity;
+    for (final site in sites) {
+      if (site.disabled || !_has(site.role.toLowerCase(), preferred)) continue;
+      final dx = resident.position.x - site.position.x;
+      final dy = resident.position.y - site.position.y;
+      final score = sqrt(dx * dx + dy * dy) + site.users * 28;
+      if (score < bestScore) {
+        best = site;
+        bestScore = score;
+      }
+    }
+    return best;
+  }
+
+  void _startJourneyHome(ResidentAgent resident) {
+    if (resident.activity == ResidentActivity.working && resident.onShift) {
+      final workplace = resident.target;
+      if (workplace != null) workplace.users = max(0, workplace.users - 1);
+    }
+    resident
+      ..onShift = false
+      ..travelingToWork = false
+      ..workSite = null;
+    final home = resident.homePosition;
+    if (home == null) {
+      resident
+        ..target = null
+        ..activity = ResidentActivity.wandering
+        ..returningHome = false;
+      return;
+    }
+    resident
+      ..target = ResidentSite(home, 'дом')
+      ..activity = ResidentActivity.walking
+      ..returningHome = true;
   }
 
   void _updateSocial(double dt) {
