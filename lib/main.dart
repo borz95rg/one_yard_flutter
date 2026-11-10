@@ -570,7 +570,7 @@ class SettlementMap extends Component {
     _timeOfDay = (_timeOfDay + dt / 180) % 1;
     _housingGrowthTimer += dt;
     final hour = (_timeOfDay * 24).floor();
-    people.update(dt, isNight: hour < 6 || hour >= 20);
+    people.update(dt, isNight: hour < 6 || hour >= 20, hour: hour);
     market.update(
       dt: dt,
       residents: people.residents,
@@ -663,8 +663,142 @@ class SettlementMap extends Component {
     for (final building in sorted) {
       if (building.visible) _drawBuilding(canvas, building);
     }
+    _drawTraffic(canvas);
     _drawPeople(canvas);
     canvas.restore();
+  }
+
+  static const _trafficRoutes = <List<Offset>>[
+    [
+      Offset(0, 352),
+      Offset(170, 350),
+      Offset(360, 362),
+      Offset(560, 395),
+      Offset(790, 455),
+      Offset(1010, 505),
+      Offset(1195, 566),
+    ],
+    [
+      Offset(0, 276),
+      Offset(165, 256),
+      Offset(330, 274),
+      Offset(480, 326),
+      Offset(620, 360),
+      Offset(815, 364),
+      Offset(1015, 335),
+      Offset(1195, 300),
+    ],
+    [
+      Offset(430, 300),
+      Offset(565, 286),
+      Offset(700, 250),
+      Offset(825, 194),
+      Offset(940, 132),
+      Offset(1048, 96),
+    ],
+    [
+      Offset(310, 170),
+      Offset(420, 235),
+      Offset(520, 315),
+      Offset(630, 388),
+      Offset(760, 455),
+      Offset(900, 504),
+    ],
+    [
+      Offset(1195, 414),
+      Offset(1040, 405),
+      Offset(900, 394),
+      Offset(760, 376),
+      Offset(625, 350),
+      Offset(490, 320),
+      Offset(350, 302),
+    ],
+  ];
+
+  void _drawTraffic(Canvas canvas) {
+    if (artwork == null || people.residents.length < 3) return;
+    final stage = (people.residents.length / 70).clamp(0, 1).toDouble();
+    final count = math.min(22, 2 + (stage * 20).floor());
+    final colors = [
+      const Color(0xffbd594a),
+      const Color(0xff6d9db7),
+      const Color(0xffd2c6a6),
+      const Color(0xff79966e),
+      const Color(0xff514c48),
+    ];
+    const artWidth = 1195.0, artHeight = 600.0;
+    for (var i = 0; i < count; i++) {
+      final route = _trafficRoutes[i % _trafficRoutes.length];
+      final direction = i.isEven ? 1.0 : -1.0;
+      final cycle = (_timeOfDay * 24 * 2.4 * direction + i * 1.73) % 18;
+      final progress = ((cycle + 18) % 18) / 18;
+      final sample = _sampleRoute(route, progress);
+      final x = (sample.$1.dx / artWidth - .5) * 1768;
+      final y = (sample.$1.dy / artHeight - .5) * 936;
+      final tangentX = sample.$2.dx * 1768 / artWidth;
+      final tangentY = sample.$2.dy * 936 / artHeight;
+      final angle = math.atan2(tangentY, tangentX);
+      final bus = stage > .68 && i % 7 == 0;
+      final length = bus ? 28.0 : 17.0;
+      final height = bus ? 9.0 : 7.0;
+      canvas.save();
+      canvas.translate(x, y);
+      canvas.rotate(angle);
+      canvas.drawOval(
+        Rect.fromCenter(center: Offset(1, 4), width: length + 3, height: 7),
+        Paint()..color = const Color(0x880b1314),
+      );
+      final body = RRect.fromRectAndRadius(
+        Rect.fromCenter(center: Offset.zero, width: length, height: height),
+        const Radius.circular(2),
+      );
+      canvas.drawRRect(body, Paint()..color = const Color(0xff171b1b));
+      canvas.drawRRect(
+        body,
+        Paint()
+          ..color = bus ? const Color(0xffd3a84c) : colors[i % colors.length]
+          ..style = PaintingStyle.fill,
+      );
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromCenter(
+            center: Offset(bus ? -1 : 0, -1),
+            width: bus ? 16 : 8,
+            height: 3,
+          ),
+          const Radius.circular(1),
+        ),
+        Paint()..color = const Color(0xffb7d3d8),
+      );
+      final lamp = Paint()..color = const Color(0xffffe6a3);
+      canvas.drawCircle(Offset(length / 2 - 1, -1.5), .8, lamp);
+      canvas.drawCircle(Offset(length / 2 - 1, 1.5), .8, lamp);
+      canvas.restore();
+    }
+  }
+
+  static (Offset, Offset) _sampleRoute(List<Offset> points, double progress) {
+    var totalLength = 0.0;
+    final lengths = <double>[];
+    for (var i = 1; i < points.length; i++) {
+      final delta = points[i] - points[i - 1];
+      final length = delta.distance;
+      lengths.add(length);
+      totalLength += length;
+    }
+    var remaining = totalLength * progress;
+    for (var i = 0; i < lengths.length; i++) {
+      final length = lengths[i];
+      if (remaining <= length || i == lengths.length - 1) {
+        final from = points[i], to = points[i + 1];
+        final fraction = length == 0
+            ? 0.0
+            : (remaining / length).clamp(0, 1).toDouble();
+        return (from + (to - from) * fraction, to - from);
+      }
+      remaining -= length;
+    }
+    return (points.last, points.last - points[points.length - 2]);
   }
 
   void _drawFactionTerritories(Canvas canvas) {
