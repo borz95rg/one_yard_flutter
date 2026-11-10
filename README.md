@@ -19,7 +19,7 @@ This is an incremental migration foundation. It does not replace or modify
   and data-only payload.
 - Rejects malformed roots and unsupported future schema versions.
 - Legacy HTML localStorage saves are retained losslessly in `legacyHtmlSave`;
-  field-by-field conversion remains pending.
+  only the verified world/time/season/ecology slice is mapped so far; all other fields remain pending.
 
 ### Stage 3 — app-private save storage and recovery
 
@@ -33,6 +33,18 @@ This is an incremental migration foundation. It does not replace or modify
   without deleting or overwriting the damaged primary.
 - File I/O is behind `SaveFileStore`, allowing recovery logic to be tested with
   an in-memory fake.
+
+### Stage 4 — typed world-state migration slice
+
+- Added `WorldState` for the verified HTML save fields: season index/timer,
+  world year, weather/timer, era index and ecology metrics.
+- Legacy HTML saves now populate `payload.worldState` while the complete
+  original object remains preserved under `legacyHtmlSave`.
+- Missing/invalid values receive source-aligned defaults; season and era indices
+  are bounded to the ranges observed in the HTML source.
+- Added tests for mapping, invalid-value handling and JSON round-trip.
+- This is data migration only: season progression, weather selection, harvests,
+  disasters and ecology simulation are not ported yet.
 
 ## UI direction confirmed
 

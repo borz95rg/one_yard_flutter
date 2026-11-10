@@ -1,3 +1,4 @@
+import '../game/world_state.dart';
 import 'dart:convert';
 
 /// Versioned, JSON-based local save container for the Flutter migration.
@@ -86,8 +87,9 @@ class GameSave {
           'source': 'html_localStorage_one_yard_save',
           'sourceVersion': legacyVersion,
           'sourceFilenameVersion': 19,
-          'status': 'raw_preserved_field_mapping_pending',
+          'status': 'partial_world_state_mapped_other_fields_pending',
         },
+        'worldState': WorldState.fromLegacyHtml(root).toJson(),
       },
       legacyHtmlSave: root,
     );
