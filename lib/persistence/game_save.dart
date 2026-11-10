@@ -40,7 +40,8 @@ class GameSave {
   factory GameSave.create({
     required Map<String, dynamic> payload,
     DateTime? now,
-  }) => GameSave(
+  }) =>
+      GameSave(
         schemaVersion: currentSchemaVersion,
         savedAtUtc: (now ?? DateTime.now()).toUtc(),
         payload: payload,
@@ -70,7 +71,8 @@ class GameSave {
         schemaVersion: version,
         savedAtUtc: timestamp.toUtc(),
         payload: Map<String, dynamic>.from(payload),
-        legacyHtmlSave: legacy is Map ? Map<String, dynamic>.from(legacy) : null,
+        legacyHtmlSave:
+            legacy is Map ? Map<String, dynamic>.from(legacy) : null,
       );
     }
 

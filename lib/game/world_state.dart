@@ -61,12 +61,16 @@ class WorldState {
     }
 
     return WorldState(
-      seasonIndex: _integer(legacy['seasonIndex'], fallback: 0).clamp(0, 3).toInt(),
+      seasonIndex:
+          _integer(legacy['seasonIndex'], fallback: 0).clamp(0, 3).toInt(),
       seasonTimer: _nonNegative(legacy['seasonTimer']),
-      worldYear: _integer(legacy['worldYear'], fallback: 1).clamp(1, 1 << 31).toInt(),
-      weather: legacy['weather'] is String ? legacy['weather'] as String : 'Ясно',
+      worldYear:
+          _integer(legacy['worldYear'], fallback: 1).clamp(1, 1 << 31).toInt(),
+      weather:
+          legacy['weather'] is String ? legacy['weather'] as String : 'Ясно',
       weatherTimer: _nonNegative(legacy['weatherTimer']),
-      currentEraIndex: _integer(legacy['currentEraIndex'], fallback: 0).clamp(0, 5).toInt(),
+      currentEraIndex:
+          _integer(legacy['currentEraIndex'], fallback: 0).clamp(0, 5).toInt(),
       nature: Map.unmodifiable(nature),
       natureEventTimer: _nonNegative(legacy['natureEventTimer']),
     );

@@ -55,15 +55,13 @@ This is an incremental migration foundation. It does not replace or modify
 - Preserves source formulas for summer/autumn harvest, winter food consumption,
   forest/wildlife recovery, settlement pollution pressure, rain/snow soil gain,
   drought damage, flood/storm/wildfire counters and food/morale effects.
-- Randomness is injectable so behavior can be tested deterministically. The
-  simulation returns updated state, food total, morale delta and event strings;
-  the Flame/UI layer must apply those results to residents and display events.
+- Randomness is injectable. The game scene applies returned food and morale
+  changes and forwards natural-event messages to the event feed.
 - Weather particles and rendering are intentionally not part of this domain
   module. `natureEventTimer` is retained in the Flutter state; the HTML save
   does not persist that timer, so imported legacy saves start it at zero.
-- Added deterministic tests for season transition/harvest, winter/year rollover,
-  drought behavior and invalid delta time. Tests are authored but not executed
-  here because Flutter/Dart SDK is unavailable.
+- Existing tests cover season transition/harvest, winter/year rollover, drought
+  behavior and invalid delta time. Tests were not run in this continuation.
 
 
 ### Stage 6 — isometric grid geometry
@@ -72,9 +70,43 @@ This is an incremental migration foundation. It does not replace or modify
 - Converts tile coordinates to isometric world-space centers and back.
 - Resolves a world-space tap to a tile only when it falls inside that tile's diamond.
 - Validates map and tile dimensions; includes round-trip and hit-test test cases.
-- This is the mathematical foundation only: no Flame `GameWidget`, painter, sprites, gesture wiring or playable map has been added yet.
+- This geometry is used by the Flame scene for map taps and building placement.
 
-## UI direction confirmed
+### Stage 7 — Android scene and reference layout
+
+- Added a Flutter Android app using Flame's `GameWidget`, a generated
+  isometric village, touch panning and pinch zoom.
+- Arranged resource/time headers, category navigation, population/economy/
+  ecology panels, district legend and minimap, events, technology, and an
+  eight-option construction toolbar to follow the supplied UI composition.
+- Building placement uses isometric tile hit-testing and construction material
+  costs. The map is still vector artwork, not the detailed city art in the
+  supplied image; several panels remain works in progress.
+- Added GitHub Actions to produce a release APK artifact on branch pushes or
+  manual runs.
+
+### Stage 8 — residents, nature and starter economy
+
+- Residents have individual needs, personality, age and morale; they wander,
+  choose useful sites, walk to them, and satisfy needs.
+- Added nearby friendships/rivalries, marriages, child births, basic inherited
+  traits and family/generation counts.
+- The economy assigns starter jobs and updates food, construction materials,
+  goods, trade, tax and treasury on timed market steps. Construction debits
+  materials.
+- Season, weather and ecology simulation runs in the game scene, affecting food
+  and morale and feeding natural-event messages into the UI.
+- Residents, market values and map buildings are connected to the scene UI.
+- Game state loads from and autosaves to app-private storage; the top-bar save
+  control writes immediately. The repository keeps and can recover from a backup.
+- The importer retains the complete legacy HTML save and maps available resident
+  and market data. The HTML source does not save resident positions or needs, so
+  those use initialized values after import.
+- Factions, healthcare, traffic, diplomacy, education/research, multi-city
+  world systems and historical progression still need migration. Several
+  dashboard values and research/category controls remain illustrative.
+
+## UI direction
 
 Use a modern isometric city-builder layout: isometric world view; compact top
 bar for resources, population, time and era; contextual side panels; bottom
@@ -88,10 +120,9 @@ flutter pub get
 flutter test
 ```
 
-Tests have been added for camera math, save-envelope round-trip/legacy
-preservation, storage round-trip, backup retention, corrupt-primary recovery,
-and rollback after a simulated rename failure. This environment does not have
-Flutter or Dart installed, so these tests have not been executed here.
+Tests are present for camera math, save-envelope round-trip/legacy preservation,
+storage recovery, grid geometry, world-state migration and ecology simulation.
+They have not been run in this continuation.
 
 ## Important source audit
 
@@ -103,19 +134,21 @@ and maps saved resident IDs to newly generated runtime IDs by array index;
 therefore it does not preserve residents' exact runtime positions/IDs.
 
 The Flutter save layer must use explicit schema migrations and must not assume
-the HTML save version matches its filename. The current importer only wraps
-and preserves the legacy object; it does not yet map simulation fields into
-Dart domain models.
+the HTML save version matches its filename. The current importer preserves the
+legacy object and maps only verified world and ecology fields. Resident and
+economy simulation imports are still pending.
 
-## Next integration step
+## Next integration steps
 
-Build the Flame `GameWidget` and connect `ViewportCamera` to Flame's camera and
-Flutter scale gestures. In parallel, inspect the HTML simulation structures
-and migrate a small, verified domain slice (world/time/season first) into typed
-Dart models. Do not rewrite resident/economy/social simulation until their data
-structures and behavior are mapped.
+Continue the migration with households, public health, research, factions,
+statehood, culture, traffic, trade networks and historical eras; expose each
+system through working controls and preserve its persisted data. Replace the
+procedural vector map with detailed artwork and connect remaining dashboard
+values and research/category controls to game state.
 
 ## Source status
 
-The original HTML v19 source remains the behavioral reference. This folder is
-still a migration foundation, not a complete runnable game or APK.
+The original HTML source remains the behavioral reference. This is a runnable
+Android prototype with several migrated systems, not yet feature-equivalent.
+The local machine has no Android SDK, so the GitHub Actions workflow is the
+intended APK build path after the project is pushed.

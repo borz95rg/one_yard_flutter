@@ -6,7 +6,8 @@ import 'world_state.dart';
 /// Rendering particles, UI notifications and resident/market mutations are
 /// returned as data for the Flutter/Flame layer to apply.
 class NatureSimulation {
-  NatureSimulation({double Function()? random}) : _random = random ?? _defaultRandom;
+  NatureSimulation({double Function()? random})
+      : _random = random ?? _defaultRandom;
 
   final double Function() _random;
   static final Random _rng = Random();
@@ -35,8 +36,8 @@ class NatureSimulation {
       season = (season + 1) % 4;
       if (season == 0) year++;
       if (season == 1) {
-        final yieldBoost = max(0.35, nature['soil']! / 100) *
-            (weather == 'Засуха' ? 0.35 : 1);
+        final yieldBoost =
+            max(0.35, nature['soil']! / 100) * (weather == 'Засуха' ? 0.35 : 1);
         final harvest = max(1, (residentCount * 0.16 * yieldBoost).floor());
         nextFood += harvest;
         nature['harvests'] = nature['harvests']! + 1;
@@ -50,14 +51,17 @@ class NatureSimulation {
       } else {
         events.add('Наступил сезон: ${seasonNames[season]}');
       }
-      nature['forest'] = min(100.0, nature['forest']! + (season == 0 ? 1.5 : 0.4));
-      nature['wildlife'] = min(100.0, nature['wildlife']! + (season == 0 ? 1 : 0.2));
+      nature['forest'] =
+          min(100.0, nature['forest']! + (season == 0 ? 1.5 : 0.4));
+      nature['wildlife'] =
+          min(100.0, nature['wildlife']! + (season == 0 ? 1 : 0.2));
       if (season == 3) {
         final winterCost = max(1, (residentCount * 0.08).ceil());
         nextFood = max(0.0, nextFood - winterCost.toDouble());
         if (nextFood < residentCount * 0.12) {
           moraleDelta -= 0.025;
-          events.add('Зимой не хватает продовольствия — настроение жителей падает');
+          events.add(
+              'Зимой не хватает продовольствия — настроение жителей падает');
         }
       }
     }
@@ -70,14 +74,18 @@ class NatureSimulation {
               ? const ['Дождь', 'Гроза', 'Ясно', 'Ветер']
               : const ['Дождь', 'Ясно', 'Туман', 'Ветер', 'Гроза'];
       final previous = weather;
-      weather = options[(_random() * options.length).floor().clamp(0, options.length - 1).toInt()];
+      weather = options[(_random() * options.length)
+          .floor()
+          .clamp(0, options.length - 1)
+          .toInt()];
       if (weather != previous && _random() < 0.35) {
         events.add('Погода изменилась: ${weather.toLowerCase()}');
       }
     }
 
     final settlementPressure = max(0, residentCount - 8) * 0.0007 * dt;
-    nature['pollution'] = _clamp(nature['pollution']! + settlementPressure - 0.0015 * dt, 0, 100);
+    nature['pollution'] =
+        _clamp(nature['pollution']! + settlementPressure - 0.0015 * dt, 0, 100);
     if (residentCount > 12 && _random() < 0.0008 * dt) {
       nature['forest'] = max(5.0, nature['forest']! - 0.6);
       nature['soil'] = max(10.0, nature['soil']! - 0.3);
@@ -134,8 +142,11 @@ class NatureSimulation {
       nature: Map.unmodifiable(nature),
       natureEventTimer: eventTimer,
     );
-    return NatureTickResult(state: updated, food: nextFood,
-        residentMoraleDelta: moraleDelta, events: List.unmodifiable(events));
+    return NatureTickResult(
+        state: updated,
+        food: nextFood,
+        residentMoraleDelta: moraleDelta,
+        events: List.unmodifiable(events));
   }
 
   static const seasonNames = ['Весна', 'Лето', 'Осень', 'Зима'];
@@ -144,10 +155,14 @@ class NatureSimulation {
 }
 
 class NatureTickResult {
-  const NatureTickResult({required this.state, required this.food,
-    required this.residentMoraleDelta, required this.events});
+  const NatureTickResult(
+      {required this.state,
+      required this.food,
+      required this.residentMoraleDelta,
+      required this.events});
   final WorldState state;
   final double food;
+
   /// Apply this delta to each resident's morale, with the HTML source's floor.
   final double residentMoraleDelta;
   final List<String> events;

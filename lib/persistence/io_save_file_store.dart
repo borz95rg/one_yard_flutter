@@ -18,7 +18,10 @@ class IoSaveFileStore implements SaveFileStore {
   }
 
   File _file(String name) {
-    if (name.contains('/') || name.contains('\\') || name == '.' || name == '..') {
+    if (name.contains('/') ||
+        name.contains('\\') ||
+        name == '.' ||
+        name == '..') {
       throw ArgumentError.value(name, 'name', 'A plain file name is required');
     }
     return File('${_directory.path}${Platform.pathSeparator}$name');

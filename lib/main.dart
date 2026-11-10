@@ -1,0 +1,1238 @@
+import 'dart:async';
+import 'dart:math' as math;
+
+import 'package:flame/components.dart';
+import 'package:flame/game.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+
+import 'game/city_economy.dart';
+import 'game/isometric_grid.dart';
+import 'game/nature_simulation.dart';
+import 'game/resident_simulation.dart';
+import 'game/world_state.dart';
+import 'persistence/game_save.dart';
+import 'persistence/io_save_file_store.dart';
+import 'persistence/save_storage.dart';
+
+void main() => runApp(const OneYardApp());
+
+class OneYardApp extends StatelessWidget {
+  const OneYardApp({super.key});
+
+  @override
+  Widget build(BuildContext context) => MaterialApp(
+        debugShowCheckedModeBanner: false,
+        title: 'Один двор — целая цивилизация',
+        theme: ThemeData.dark(useMaterial3: true).copyWith(
+          scaffoldBackgroundColor: const Color(0xff10201e),
+          colorScheme: ColorScheme.fromSeed(
+            seedColor: const Color(0xffe5ad39),
+            brightness: Brightness.dark,
+          ),
+        ),
+        home: const SettlementScreen(),
+      );
+}
+
+class SettlementScreen extends StatefulWidget {
+  const SettlementScreen({super.key});
+  @override
+  State<SettlementScreen> createState() => _SettlementScreenState();
+}
+
+class _SettlementScreenState extends State<SettlementScreen>
+    with WidgetsBindingObserver {
+  late final SettlementGame game;
+  double _previousScale = 1;
+  int _selectedTool = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    game = SettlementGame();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) unawaited(game.save());
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    unawaited(game.save());
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        body: SafeArea(
+          child: LayoutBuilder(builder: (context, constraints) {
+            final compact = constraints.maxWidth < 700;
+            return Stack(children: [
+              Positioned.fill(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onScaleStart: (_) => _previousScale = 1,
+                  onScaleUpdate: (details) {
+                    final factor = details.scale / _previousScale;
+                    _previousScale = details.scale;
+                    game.pan(
+                        details.focalPointDelta.dx, details.focalPointDelta.dy);
+                    if (details.pointerCount > 1) game.zoom(factor);
+                  },
+                  onTapUp: (details) {
+                    if (game.placeAtScreen(
+                        details.localPosition, _selectedTool)) {
+                      setState(() {});
+                    } else if (details.localPosition.dy > 130 &&
+                        details.localPosition.dy <
+                            constraints.maxHeight - 110) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                              'Здесь нельзя строить или не хватает стройматериалов'),
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    }
+                  },
+                  child: GameWidget(game: game),
+                ),
+              ),
+              Positioned(
+                  left: 10,
+                  right: 10,
+                  top: 8,
+                  child: _TopBar(compact: compact, game: game)),
+              if (!compact) ...[
+                Positioned(
+                    left: 10,
+                    top: 125,
+                    bottom: 125,
+                    width: 226,
+                    child: _LeftDashboard(game: game)),
+                const Positioned(
+                    right: 10, top: 125, width: 218, child: _DistrictPanel()),
+                Positioned(
+                    left: 10,
+                    bottom: 116,
+                    width: 390,
+                    child: _EventsPanel(events: game.events)),
+                Positioned(
+                    right: 10,
+                    bottom: 116,
+                    child: _TechnologyPanel(world: game.worldState)),
+              ] else ...[
+                Positioned(
+                    left: 10,
+                    right: 10,
+                    top: 76,
+                    child: _CompactStats(game: game)),
+              ],
+              Positioned(
+                  left: 10,
+                  right: 10,
+                  bottom: 8,
+                  child: _BuildBar(
+                    compact: compact,
+                    selected: _selectedTool,
+                    onSelect: (value) => setState(() => _selectedTool = value),
+                  )),
+            ]);
+          }),
+        ),
+      );
+}
+
+class SettlementGame extends FlameGame {
+  late final SettlementMap map;
+  final ValueNotifier<ResidentMetrics> residents = ValueNotifier(
+    const ResidentMetrics(
+        population: 8,
+        children: 0,
+        adults: 8,
+        elders: 0,
+        couples: 0,
+        familyLines: 8,
+        generations: 1),
+  );
+  final ValueNotifier<EconomyMetrics> economy = ValueNotifier(
+    const EconomyMetrics(
+        food: 45,
+        materials: 28,
+        goods: 18,
+        treasury: 0,
+        taxRate: .08,
+        tradeVolume: 0),
+  );
+  final ValueNotifier<WorldState> worldState =
+      ValueNotifier(WorldState.initial());
+  final ValueNotifier<List<String>> events = ValueNotifier(const []);
+  final ValueNotifier<bool> pauseState = ValueNotifier(false);
+  final ValueNotifier<int> speedIndex = ValueNotifier(0);
+  static const speeds = [1.0, 2.0, 4.0];
+  double _refreshTimer = 0;
+  double _saveTimer = 0;
+  GameSaveRepository? _saveRepository;
+  Map<String, dynamic>? _legacyHtmlSave;
+  bool _saving = false;
+
+  @override
+  Color backgroundColor() => const Color(0xff183b3b);
+
+  @override
+  Future<void> onLoad() async {
+    camera.viewfinder.zoom = .82;
+    try {
+      _saveRepository = GameSaveRepository(await IoSaveFileStore.create());
+    } catch (_) {
+      // The scene remains playable on platforms without app-private storage.
+    }
+    map = SettlementMap();
+    final previous = await _saveRepository?.load();
+    if (previous != null) {
+      map.restore(previous);
+      _legacyHtmlSave = previous.legacyHtmlSave;
+    }
+    world.add(map);
+  }
+
+  @override
+  void update(double dt) {
+    if (pauseState.value) return;
+    super.update(dt * speeds[speedIndex.value]);
+    if (!isLoaded) return;
+    _saveTimer += dt * speeds[speedIndex.value];
+    if (_saveTimer >= 30) {
+      _saveTimer = 0;
+      unawaited(save());
+    }
+    _refreshTimer += dt;
+    if (_refreshTimer >= .5) {
+      _refreshTimer = 0;
+      residents.value = map.people.metrics;
+      economy.value = map.market.metrics;
+      worldState.value = map.climate;
+      events.value = map.recentEvents.take(4).toList(growable: false);
+    }
+  }
+
+  void pan(double dx, double dy) {
+    final zoom = camera.viewfinder.zoom;
+    camera.viewfinder.position.add(Vector2(-dx / zoom, -dy / zoom));
+  }
+
+  void zoom(double factor) {
+    if (factor.isFinite && factor > 0) {
+      camera.viewfinder.zoom =
+          (camera.viewfinder.zoom * factor).clamp(.45, 2.2);
+    }
+  }
+
+  void togglePause() => pauseState.value = !pauseState.value;
+
+  void cycleSpeed() =>
+      speedIndex.value = (speedIndex.value + 1) % speeds.length;
+
+  Future<void> save() async {
+    final repository = _saveRepository;
+    if (repository == null || !isLoaded || _saving) return;
+    _saving = true;
+    try {
+      await repository.save(GameSave(
+        schemaVersion: GameSave.currentSchemaVersion,
+        savedAtUtc: DateTime.now().toUtc(),
+        payload: map.toJson(),
+        legacyHtmlSave: _legacyHtmlSave,
+      ));
+    } catch (error) {
+      events.value = ['Не удалось сохранить игру: $error', ...events.value]
+          .take(4)
+          .toList();
+    } finally {
+      _saving = false;
+    }
+  }
+
+  bool placeAtScreen(Offset point, int kind) {
+    if (!isLoaded) return false;
+    final zoom = camera.viewfinder.zoom;
+    final worldX =
+        camera.viewfinder.position.x + (point.dx - size.x / 2) / zoom;
+    final worldY =
+        camera.viewfinder.position.y + (point.dy - size.y / 2) / zoom;
+    final origin =
+        map.cellCenter(SettlementMap.columns ~/ 2, SettlementMap.rows ~/ 2);
+    final cell = IsometricGrid(
+      columns: SettlementMap.columns,
+      rows: SettlementMap.rows,
+      tileWidth: SettlementMap.tileW,
+      tileHeight: SettlementMap.tileH,
+    ).cellAt(IsometricPoint(worldX + origin.x, worldY + origin.y));
+    return cell != null && map.placeBuilding(cell, kind);
+  }
+
+  @override
+  void onRemove() {
+    residents.dispose();
+    economy.dispose();
+    worldState.dispose();
+    events.dispose();
+    pauseState.dispose();
+    speedIndex.dispose();
+    super.onRemove();
+  }
+}
+
+class _Building {
+  const _Building(this.column, this.row, this.kind);
+  final int column, row, kind;
+}
+
+class SettlementMap extends Component {
+  static const columns = 28, rows = 24;
+  static const tileW = 68.0, tileH = 36.0;
+  final List<_Building> _buildings = [
+    const _Building(13, 10, 3),
+    const _Building(10, 12, 0),
+    const _Building(16, 12, 1),
+    const _Building(12, 15, 2),
+    const _Building(18, 15, 0),
+    const _Building(8, 9, 1),
+    const _Building(20, 10, 2),
+    const _Building(15, 7, 0),
+    const _Building(6, 14, 0),
+    const _Building(21, 17, 1),
+  ];
+  late ResidentSimulation people = ResidentSimulation.initial(
+    sites: _defaultSites(),
+    width: tileW * columns,
+    height: tileH * rows,
+  );
+  MarketState market = MarketState();
+  final NatureSimulation nature = NatureSimulation();
+  WorldState climate = WorldState.initial();
+  double _timeOfDay = .35;
+  final List<String> recentEvents = [];
+  Map<String, dynamic>? legacyHtmlSave;
+
+  List<ResidentSite> _defaultSites() => [
+        for (final b in _buildings)
+          ResidentSite(cellCenter(b.column, b.row), _roleForKind(b.kind)),
+        ResidentSite(cellCenter(23, 12), 'источник воды'),
+        ResidentSite(cellCenter(5, 18), 'парк отдыха'),
+      ];
+
+  Map<String, dynamic> toJson() => {
+        'buildings': [
+          for (final building in _buildings)
+            {
+              'column': building.column,
+              'row': building.row,
+              'kind': building.kind
+            },
+        ],
+        'residents': people.toJson(),
+        'market': market.toJson(),
+        'worldState': climate.toJson(),
+        'timeOfDay': _timeOfDay,
+      };
+
+  void restore(GameSave save) {
+    final legacy = save.legacyHtmlSave;
+    legacyHtmlSave = legacy;
+    final payload = save.payload;
+    final savedBuildings = payload['buildings'];
+    if (savedBuildings is List) {
+      final restored = <_Building>[];
+      for (final item in savedBuildings.whereType<Map>()) {
+        final col = item['column'], row = item['row'], kind = item['kind'];
+        if (col is int &&
+            row is int &&
+            kind is int &&
+            col >= 0 &&
+            col < columns &&
+            row >= 0 &&
+            row < rows &&
+            kind >= 0 &&
+            kind < 8) {
+          restored.add(_Building(col, row, kind));
+        }
+      }
+      if (restored.isNotEmpty) {
+        _buildings
+          ..clear()
+          ..addAll(restored);
+      }
+    }
+    final worldData = payload['worldState'];
+    if (worldData is Map) {
+      climate = WorldState.fromJson(Map<String, dynamic>.from(worldData));
+    } else if (legacy != null) {
+      climate = WorldState.fromLegacyHtml(legacy);
+    }
+    final marketData = payload['market'] is Map
+        ? Map<String, dynamic>.from(payload['market'] as Map)
+        : legacy?['market'] is Map
+            ? Map<String, dynamic>.from(legacy!['market'] as Map)
+            : null;
+    if (marketData != null) {
+      if (legacy != null) {
+        marketData['treasury'] ??= legacy['cityTreasury'];
+        marketData['taxRate'] ??= legacy['cityTaxRate'];
+      }
+      market = MarketState.fromJson(marketData);
+    }
+    final residentsData = payload['residents'];
+    if (residentsData is List) {
+      people = ResidentSimulation.restore(
+        source: residentsData,
+        sites: _defaultSites(),
+        width: tileW * columns,
+        height: tileH * rows,
+      );
+    } else if (legacy != null && legacy['residents'] is List) {
+      people = ResidentSimulation.fromLegacySave(
+        source: legacy['residents'],
+        sites: [..._defaultSites(), ..._legacySites(legacy['objects'])],
+        width: tileW * columns,
+        height: tileH * rows,
+      );
+      legacyHtmlSave = legacy;
+    }
+    final time = payload['timeOfDay'];
+    if (time is num && time.isFinite) {
+      _timeOfDay = time.toDouble().clamp(0, 1).toDouble();
+    }
+    if (legacy != null) {
+      recentEvents.insert(0,
+          'Сохранение HTML ${legacy['version'] ?? '?'} импортировано; исходные данные сохранены');
+    }
+  }
+
+  List<ResidentSite> _legacySites(Object? source) {
+    if (source is! List) return const [];
+    final objects = source.whereType<Map>().toList();
+    if (objects.isEmpty) return const [];
+    final xs = objects
+        .map((o) => o['x'])
+        .whereType<num>()
+        .map((n) => n.toDouble())
+        .toList();
+    final ys = objects
+        .map((o) => o['y'])
+        .whereType<num>()
+        .map((n) => n.toDouble())
+        .toList();
+    if (xs.isEmpty || ys.isEmpty) return const [];
+    final minX = xs.reduce(math.min), maxX = xs.reduce(math.max);
+    final minY = ys.reduce(math.min), maxY = ys.reduce(math.max);
+    return [
+      for (final object in objects)
+        if (object['x'] is num && object['y'] is num)
+          ResidentSite(
+            IsometricPoint(
+              _normalizeCoordinate(
+                      (object['x'] as num).toDouble(), minX, maxX) *
+                  tileW *
+                  columns,
+              _normalizeCoordinate(
+                      (object['y'] as num).toDouble(), minY, maxY) *
+                  tileH *
+                  rows,
+            ),
+            _legacyRole(object),
+          ),
+    ];
+  }
+
+  static double _normalizeCoordinate(
+          double value, double minimum, double maximum) =>
+      maximum == minimum
+          ? 0
+          : ((value - minimum) / (maximum - minimum) - .5) * .75;
+
+  static String _legacyRole(Map object) {
+    final role = object['role'];
+    if (role is String && role.isNotEmpty) return role;
+    return switch ('${object['type']}') {
+      'boot' => 'дом',
+      'puddle' => 'источник воды',
+      'stick' => 'дерево',
+      'stone' => 'алтарь',
+      _ => 'парк отдыха',
+    };
+  }
+
+  IsometricPoint cellCenter(int column, int row) => IsometricPoint(
+        (column - row) * tileW / 2,
+        (column + row) * tileH / 2,
+      );
+
+  bool placeBuilding(GridCell cell, int kind) {
+    if (kind < 0 ||
+        kind > 7 ||
+        _buildings.any((b) => b.column == cell.column && b.row == cell.row)) {
+      return false;
+    }
+    final costs = [8.0, 12, 15, 20, 7, 22, 30, 4];
+    final cost = costs[kind];
+    if (market.materials < cost) {
+      return false;
+    }
+    market.materials -= cost;
+    _buildings.add(_Building(cell.column, cell.row, kind));
+    people.sites.add(
+        ResidentSite(cellCenter(cell.column, cell.row), _roleForKind(kind)));
+    recentEvents.insert(
+        0, 'Построено: ${_buildingName(kind)} (−${cost.toInt()} строймат.)');
+    return true;
+  }
+
+  static String _buildingName(int kind) => const [
+        'жилой дом',
+        'производство',
+        'рынок',
+        'инфраструктура',
+        'парк',
+        'служба',
+        'уникальное здание',
+        'дорога',
+      ][kind];
+
+  static String _roleForKind(int kind) => switch (kind) {
+        0 => 'дом',
+        1 => 'ферма',
+        2 => 'рынок',
+        4 => 'парк',
+        5 => 'больница',
+        6 => 'памятник',
+        7 => 'дорога',
+        _ => 'совет',
+      };
+
+  @override
+  void update(double dt) {
+    _timeOfDay = (_timeOfDay + dt / 180) % 1;
+    final hour = (_timeOfDay * 24).floor();
+    people.update(dt, isNight: hour < 6 || hour >= 20);
+    market.update(dt: dt, residents: people.residents, sites: people.sites);
+    final result = nature.update(
+      state: climate,
+      dt: dt,
+      residentCount: people.residents.length,
+      food: market.food,
+    );
+    climate = result.state;
+    market.food = result.food;
+    if (result.residentMoraleDelta != 0) {
+      for (final resident in people.residents) {
+        resident.morale = (resident.morale + result.residentMoraleDelta)
+            .clamp(0, 1)
+            .toDouble();
+      }
+    }
+    if (result.events.isNotEmpty) {
+      recentEvents.insertAll(0, result.events);
+      if (recentEvents.length > 8) {
+        recentEvents.removeRange(8, recentEvents.length);
+      }
+    }
+  }
+
+  @override
+  void render(Canvas canvas) {
+    final origin = cellCenter(columns ~/ 2, rows ~/ 2);
+    canvas.save();
+    canvas.translate(-origin.x, -origin.y);
+    _drawTerrain(canvas);
+    _drawRoads(canvas);
+    _drawRiver(canvas);
+    _drawTrees(canvas);
+    final sorted = [..._buildings]
+      ..sort((a, b) => (a.column + a.row).compareTo(b.column + b.row));
+    for (final building in sorted) {
+      _drawBuilding(canvas, building);
+    }
+    _drawPeople(canvas);
+    canvas.restore();
+  }
+
+  void _drawTerrain(Canvas canvas) {
+    final fill = Paint();
+    for (var row = 0; row < rows; row++) {
+      for (var col = 0; col < columns; col++) {
+        final c = cellCenter(col, row);
+        final diamond = Path()
+          ..moveTo(c.x, c.y - tileH / 2)
+          ..lineTo(c.x + tileW / 2, c.y)
+          ..lineTo(c.x, c.y + tileH / 2)
+          ..lineTo(c.x - tileW / 2, c.y)
+          ..close();
+        fill.color = Color.lerp(const Color(0xff467b48),
+            const Color(0xff8da75d), ((col * 19 + row * 13) % 9) / 100)!;
+        canvas.drawPath(diamond, fill);
+        canvas.drawPath(
+            diamond,
+            Paint()
+              ..color = const Color(0x2276a75b)
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1);
+      }
+    }
+  }
+
+  void _drawRoads(Canvas canvas) {
+    final road = Paint()
+      ..color = const Color(0xff80785d)
+      ..strokeWidth = 15
+      ..strokeCap = StrokeCap.round;
+    final edge = Paint()
+      ..color = const Color(0xffc5b688)
+      ..strokeWidth = 2;
+    for (final row in [8, 13, 18]) {
+      final a = cellCenter(1, row), b = cellCenter(columns - 2, row);
+      canvas.drawLine(Offset(a.x, a.y), Offset(b.x, b.y), road);
+      canvas.drawLine(Offset(a.x, a.y), Offset(b.x, b.y), edge);
+    }
+    for (final col in [7, 13, 19]) {
+      final a = cellCenter(col, 1), b = cellCenter(col, rows - 2);
+      canvas.drawLine(Offset(a.x, a.y), Offset(b.x, b.y), road);
+      canvas.drawLine(Offset(a.x, a.y), Offset(b.x, b.y), edge);
+    }
+    final center = cellCenter(13, 13);
+    canvas.drawCircle(Offset(center.x, center.y), 21,
+        Paint()..color = const Color(0xffb7a878));
+    canvas.drawCircle(Offset(center.x, center.y), 14,
+        Paint()..color = const Color(0xff4daec2));
+    canvas.drawCircle(Offset(center.x, center.y), 5,
+        Paint()..color = const Color(0xffd9f7e8));
+  }
+
+  void _drawRiver(Canvas canvas) {
+    final river = Path();
+    for (var i = 0; i < rows; i++) {
+      final p = cellCenter(24 + (i % 3 == 0 ? 1 : 0), i);
+      if (i == 0) {
+        river.moveTo(p.x, p.y);
+      } else {
+        river.lineTo(p.x, p.y);
+      }
+    }
+    canvas.drawPath(
+        river,
+        Paint()
+          ..color = const Color(0x994ec1d1)
+          ..strokeWidth = 30
+          ..style = PaintingStyle.stroke
+          ..strokeCap = StrokeCap.round);
+    canvas.drawPath(
+        river,
+        Paint()
+          ..color = const Color(0xff64c7d0)
+          ..strokeWidth = 19
+          ..style = PaintingStyle.stroke
+          ..strokeCap = StrokeCap.round);
+  }
+
+  void _drawTrees(Canvas canvas) {
+    for (var row = 1; row < rows; row += 3) {
+      for (var col = 1; col < columns; col += 3) {
+        if ((col * 3 + row * 5) % 7 < 3 || col > 22) continue;
+        final c = cellCenter(col, row);
+        canvas.drawOval(
+            Rect.fromCenter(
+                center: Offset(c.x + 3, c.y + 5), width: 23, height: 10),
+            Paint()..color = const Color(0x550f241b));
+        canvas.drawRect(Rect.fromLTWH(c.x - 2, c.y - 10, 4, 15),
+            Paint()..color = const Color(0xff72563b));
+        canvas.drawCircle(Offset(c.x, c.y - 14), 10,
+            Paint()..color = const Color(0xff316c3b));
+        canvas.drawCircle(Offset(c.x - 4, c.y - 17), 5,
+            Paint()..color = const Color(0xff559148));
+      }
+    }
+  }
+
+  void _drawBuilding(Canvas canvas, _Building b) {
+    final c = cellCenter(b.column, b.row);
+    if (b.kind == 7) {
+      canvas.drawOval(
+          Rect.fromCenter(center: Offset(c.x, c.y), width: 54, height: 16),
+          Paint()..color = const Color(0xff867a5e));
+      return;
+    }
+    if (b.kind == 4) {
+      canvas.drawOval(
+          Rect.fromCenter(center: Offset(c.x, c.y + 2), width: 41, height: 17),
+          Paint()..color = const Color(0xff658c4b));
+      canvas.drawCircle(
+          Offset(c.x, c.y - 12), 8, Paint()..color = const Color(0xff3d7d43));
+      return;
+    }
+    final palette = [
+      const Color(0xffe4d2a5),
+      const Color(0xffc67e4b),
+      const Color(0xffb4c3c1),
+      const Color(0xffddc27e),
+      const Color(0xffc1ad79),
+      const Color(0xffbacbd0),
+      const Color(0xffd3c19d),
+      const Color(0xff80785d)
+    ];
+    final base = palette[b.kind.clamp(0, palette.length - 1)];
+    final shadow = Path()
+      ..moveTo(c.x, c.y - 21)
+      ..lineTo(c.x + 23, c.y - 9)
+      ..lineTo(c.x, c.y + 3)
+      ..lineTo(c.x - 23, c.y - 9)
+      ..close();
+    canvas.drawPath(shadow, Paint()..color = const Color(0x660d1714));
+    final left = Path()
+      ..moveTo(c.x - 17, c.y - 15)
+      ..lineTo(c.x, c.y - 7)
+      ..lineTo(c.x, c.y + 14)
+      ..lineTo(c.x - 17, c.y + 5)
+      ..close();
+    final right = Path()
+      ..moveTo(c.x, c.y - 7)
+      ..lineTo(c.x + 17, c.y - 15)
+      ..lineTo(c.x + 17, c.y + 5)
+      ..lineTo(c.x, c.y + 14)
+      ..close();
+    canvas.drawPath(left, Paint()..color = base);
+    canvas.drawPath(
+        right, Paint()..color = Color.lerp(base, Colors.black, .2)!);
+    final roof = Path()
+      ..moveTo(c.x - 20, c.y - 15)
+      ..lineTo(c.x, c.y - 28)
+      ..lineTo(c.x + 20, c.y - 15)
+      ..lineTo(c.x, c.y - 5)
+      ..close();
+    canvas.drawPath(roof, Paint()..color = const Color(0xff9d4937));
+    canvas.drawRect(Rect.fromLTWH(c.x - 3, c.y - 2, 6, 12),
+        Paint()..color = const Color(0xff563d2b));
+    canvas.drawRect(Rect.fromLTWH(c.x - 12, c.y - 8, 5, 5),
+        Paint()..color = const Color(0xff75c4ce));
+    canvas.drawRect(Rect.fromLTWH(c.x + 7, c.y - 10, 5, 5),
+        Paint()..color = const Color(0xff75c4ce));
+  }
+
+  void _drawPeople(Canvas canvas) {
+    for (final person in people.residents) {
+      final p = person.position;
+      final bob = math.sin(person.walkPhase) * 1.5;
+      final color = switch (person.personality) {
+        'builder' => const Color(0xffbf8c59),
+        'explorer' => const Color(0xff73ad86),
+        'mystic' => const Color(0xffa68bcc),
+        _ => const Color(0xffe4bf8e),
+      };
+      canvas.drawOval(
+          Rect.fromCenter(
+              center: Offset(p.x + 2, p.y + 4), width: 7, height: 3),
+          Paint()..color = const Color(0x550d1714));
+      canvas.drawCircle(Offset(p.x, p.y - 3 + bob), 2.6,
+          Paint()..color = const Color(0xffffd085));
+      canvas.drawLine(
+          Offset(p.x, p.y),
+          Offset(p.x, p.y + 4 + bob),
+          Paint()
+            ..color = color
+            ..strokeWidth = 2.2
+            ..strokeCap = StrokeCap.round);
+    }
+  }
+}
+
+class _TopBar extends StatelessWidget {
+  const _TopBar({required this.compact, required this.game});
+  final bool compact;
+  final SettlementGame game;
+  @override
+  Widget build(BuildContext context) => _GlassPanel(
+        padding: EdgeInsets.symmetric(
+            horizontal: compact ? 8 : 12, vertical: compact ? 6 : 8),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Row(children: [
+            const Icon(Icons.park, color: Color(0xffffcb56), size: 23),
+            const SizedBox(width: 7),
+            Expanded(
+                child: Text('ОДИН ДВОР — ЦИВИЛИЗАЦИЯ',
+                    maxLines: 1,
+                    style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: .5,
+                        fontSize: compact ? 10 : 14))),
+            if (!compact)
+              ValueListenableBuilder<EconomyMetrics>(
+                  valueListenable: game.economy,
+                  builder: (context, e, _) =>
+                      Row(mainAxisSize: MainAxisSize.min, children: [
+                        _Resource(
+                            icon: Icons.paid,
+                            value: e.treasury.toStringAsFixed(0)),
+                        _Resource(
+                            icon: Icons.grass,
+                            value: e.food.toStringAsFixed(0)),
+                        _Resource(
+                            icon: Icons.forest,
+                            value: e.materials.toStringAsFixed(0)),
+                        _Resource(
+                            icon: Icons.storefront,
+                            value: e.goods.toStringAsFixed(0)),
+                      ])),
+            ValueListenableBuilder<ResidentMetrics>(
+                valueListenable: game.residents,
+                builder: (context, r, _) => _Resource(
+                    icon: Icons.people_alt, value: '${r.population}')),
+            if (!compact) ...[
+              ValueListenableBuilder<WorldState>(
+                  valueListenable: game.worldState,
+                  builder: (context, world, _) => Text(
+                      'Год ${world.worldYear} · ${NatureSimulation.seasonNames[world.seasonIndex]}',
+                      style: const TextStyle(
+                          fontSize: 11, fontWeight: FontWeight.bold))),
+              const SizedBox(width: 10),
+              const Icon(Icons.wb_sunny, color: Color(0xffffd05c), size: 18),
+              const SizedBox(width: 3),
+              const Text('+16°'),
+              const SizedBox(width: 5),
+              _TimeControls(game: game),
+            ],
+            const SizedBox(width: 2),
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              tooltip: 'Сохранить игру',
+              onPressed: () => unawaited(game.save()),
+              icon: const Icon(Icons.save, size: 19, color: Colors.white70),
+            ),
+          ]),
+          if (!compact) ...[
+            const SizedBox(height: 7),
+            const Row(children: [
+              _NavButton(Icons.home_work, 'Строительство', active: true),
+              _NavButton(Icons.settings_suggest, 'Управление'),
+              _NavButton(Icons.query_stats, 'Экономика'),
+              _NavButton(Icons.groups, 'Население'),
+              _NavButton(Icons.school, 'Образование'),
+              _NavButton(Icons.health_and_safety, 'Здоровье'),
+              _NavButton(Icons.shield, 'Безопасность'),
+              _NavButton(Icons.theater_comedy, 'Культура'),
+              _NavButton(Icons.emoji_events, 'Достижения'),
+            ]),
+          ],
+        ]),
+      );
+}
+
+class _Resource extends StatelessWidget {
+  const _Resource({required this.icon, required this.value});
+  final IconData icon;
+  final String value;
+  @override
+  Widget build(BuildContext context) => Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 6),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(icon, size: 16, color: const Color(0xffffd05c)),
+        const SizedBox(width: 3),
+        Text(value,
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11))
+      ]));
+}
+
+class _NavButton extends StatelessWidget {
+  const _NavButton(this.icon, this.label, {this.active = false});
+  final IconData icon;
+  final String label;
+  final bool active;
+  @override
+  Widget build(BuildContext context) => Expanded(
+      child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 2),
+          padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 6),
+          decoration: BoxDecoration(
+              color: active ? const Color(0xff24576a) : const Color(0x99101c24),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                  color: active ? const Color(0xff67d5e4) : Colors.white12)),
+          child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+            Icon(icon,
+                size: 16,
+                color: active ? const Color(0xffffd05c) : Colors.white),
+            const SizedBox(width: 4),
+            Flexible(
+                child: Text(label,
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
+                    style: const TextStyle(
+                        fontSize: 9, fontWeight: FontWeight.w700)))
+          ])));
+}
+
+class _LeftDashboard extends StatelessWidget {
+  const _LeftDashboard({required this.game});
+  final SettlementGame game;
+  @override
+  Widget build(BuildContext context) => SingleChildScrollView(
+          child: Column(children: [
+        ValueListenableBuilder<ResidentMetrics>(
+            valueListenable: game.residents,
+            builder: (context, r, _) => _InfoCard(
+                    title: 'ЖИТЕЛИ ГОРОДА',
+                    icon: Icons.people_alt,
+                    rows: [
+                      'Население       ${r.population}',
+                      'Дети                   ${r.children}',
+                      'Взрослые              ${r.adults}',
+                      'Старейшины           ${r.elders}',
+                      'Семьи                  ${r.couples}',
+                      'Поколения         ${r.generations}'
+                    ])),
+        const SizedBox(height: 8),
+        ValueListenableBuilder<EconomyMetrics>(
+            valueListenable: game.economy,
+            builder: (context, e, _) =>
+                _InfoCard(title: 'ЭКОНОМИКА', icon: Icons.paid, rows: [
+                  'Казна                 ${e.treasury.toStringAsFixed(0)}',
+                  'Еда                     ${e.food.toStringAsFixed(1)}',
+                  'Материалы       ${e.materials.toStringAsFixed(1)}',
+                  'Товары                 ${e.goods.toStringAsFixed(1)}',
+                  'Налог                   ${(e.taxRate * 100).toStringAsFixed(0)}%'
+                ])),
+        const SizedBox(height: 8),
+        ValueListenableBuilder<WorldState>(
+            valueListenable: game.worldState,
+            builder: (context, w, _) => _InfoCard(
+                    title: 'ПРИРОДА И ЭКОЛОГИЯ',
+                    icon: Icons.forest,
+                    rows: [
+                      'Лес                   ${w.nature['forest']!.toStringAsFixed(0)}%',
+                      'Животные           ${w.nature['wildlife']!.toStringAsFixed(0)}%',
+                      'Плодородие        ${w.nature['soil']!.toStringAsFixed(0)}%',
+                      'Загрязнение       ${w.nature['pollution']!.toStringAsFixed(0)}%',
+                      'Погода               ${w.weather}'
+                    ])),
+      ]));
+}
+
+class _DistrictPanel extends StatelessWidget {
+  const _DistrictPanel();
+  @override
+  Widget build(BuildContext context) => _GlassPanel(
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Row(children: [
+          Icon(Icons.map, color: Color(0xffffcb56), size: 18),
+          SizedBox(width: 6),
+          Text('РАЙОНЫ ГОРОДА',
+              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800))
+        ]),
+        const SizedBox(height: 9),
+        for (final item in const [
+          (Color(0xff2196f3), 'Жилой район', '35%'),
+          (Color(0xffffc107), 'Торговый район', '22%'),
+          (Color(0xffff8f00), 'Производство', '20%'),
+          (Color(0xff4caf50), 'Зелёный район', '23%')
+        ])
+          Padding(
+              padding: const EdgeInsets.only(bottom: 7),
+              child: Row(children: [
+                Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(
+                        color: item.$1,
+                        borderRadius: BorderRadius.circular(3))),
+                const SizedBox(width: 6),
+                Expanded(
+                    child: Text(item.$2, style: const TextStyle(fontSize: 10))),
+                Text(item.$3,
+                    style: const TextStyle(
+                        fontSize: 10, fontWeight: FontWeight.bold))
+              ])),
+        Container(
+            height: 98,
+            decoration: BoxDecoration(
+                color: const Color(0xff264d40),
+                borderRadius: BorderRadius.circular(9)),
+            child: CustomPaint(
+                painter: _MiniMapPainter(), child: const SizedBox.expand())),
+      ]));
+}
+
+class _MiniMapPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final roads = Paint()
+      ..color = const Color(0xff438b73)
+      ..strokeWidth = 6
+      ..strokeCap = StrokeCap.round;
+    for (var i = 0; i < 6; i++) {
+      final x = size.width * (.1 + i * .14);
+      canvas.drawLine(
+          Offset(x, 0), Offset(x + size.width * .17, size.height), roads);
+    }
+    final river = Path()
+      ..moveTo(size.width * .88, 0)
+      ..quadraticBezierTo(
+          size.width * .55, size.height * .45, size.width, size.height);
+    canvas.drawPath(
+        river,
+        Paint()
+          ..color = const Color(0xff3b99bb)
+          ..strokeWidth = 13
+          ..style = PaintingStyle.stroke);
+    final district = Rect.fromLTWH(size.width * .27, size.height * .2,
+        size.width * .42, size.height * .52);
+    canvas.drawRect(district, Paint()..color = const Color(0x6693c5ff));
+    canvas.drawRect(
+        district,
+        Paint()
+          ..color = const Color(0xffbceeff)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class _EventsPanel extends StatelessWidget {
+  const _EventsPanel({required this.events});
+  final ValueListenable<List<String>> events;
+  @override
+  Widget build(BuildContext context) => ValueListenableBuilder<List<String>>(
+        valueListenable: events,
+        builder: (context, items, _) => _GlassPanel(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Row(children: [
+                Icon(Icons.notifications_active,
+                    color: Color(0xffffd05c), size: 17),
+                SizedBox(width: 6),
+                Text('СОБЫТИЯ И УВЕДОМЛЕНИЯ',
+                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800))
+              ]),
+              const SizedBox(height: 7),
+              if (items.isEmpty)
+                const Text('🌱  Поселение развивается',
+                    style: TextStyle(fontSize: 10))
+              else
+                for (final event in items.take(3))
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Text(event,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 10)),
+                  ),
+            ],
+          ),
+        ),
+      );
+}
+
+class _TimeControls extends StatelessWidget {
+  const _TimeControls({required this.game});
+  final SettlementGame game;
+  @override
+  Widget build(BuildContext context) =>
+      Row(mainAxisSize: MainAxisSize.min, children: [
+        ValueListenableBuilder<bool>(
+          valueListenable: game.pauseState,
+          builder: (context, paused, _) => IconButton(
+            visualDensity: VisualDensity.compact,
+            tooltip: paused ? 'Продолжить' : 'Пауза',
+            onPressed: game.togglePause,
+            icon: Icon(paused ? Icons.play_arrow : Icons.pause,
+                size: 20, color: const Color(0xffffd05c)),
+          ),
+        ),
+        ValueListenableBuilder<int>(
+          valueListenable: game.speedIndex,
+          builder: (context, index, _) => TextButton(
+            style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 5),
+                minimumSize: Size.zero),
+            onPressed: game.cycleSpeed,
+            child: Text('×${SettlementGame.speeds[index].toInt()}',
+                style: const TextStyle(color: Colors.white, fontSize: 11)),
+          ),
+        ),
+      ]);
+}
+
+class _TechnologyPanel extends StatelessWidget {
+  const _TechnologyPanel({required this.world});
+  final ValueListenable<WorldState> world;
+  @override
+  Widget build(BuildContext context) => SizedBox(
+      width: 218,
+      child: ValueListenableBuilder<WorldState>(
+          valueListenable: world,
+          builder: (context, state, _) => _GlassPanel(
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                    const Row(children: [
+                      Icon(Icons.science, color: Color(0xff6ed6ff), size: 18),
+                      SizedBox(width: 6),
+                      Text('ТЕХНОЛОГИИ',
+                          style: TextStyle(
+                              fontSize: 10, fontWeight: FontWeight.w800))
+                    ]),
+                    const SizedBox(height: 8),
+                    Text('Эпоха: ${state.currentEraIndex + 1} / 6',
+                        style: const TextStyle(fontSize: 10)),
+                    const SizedBox(height: 6),
+                    const LinearProgressIndicator(
+                        value: .12,
+                        minHeight: 6,
+                        color: Color(0xff4ade80),
+                        backgroundColor: Colors.white24),
+                    const SizedBox(height: 7),
+                    const Text('Научная система в разработке',
+                        style: TextStyle(fontSize: 10)),
+                  ]))));
+}
+
+class _CompactStats extends StatelessWidget {
+  const _CompactStats({required this.game});
+  final SettlementGame game;
+  @override
+  Widget build(BuildContext context) => _GlassPanel(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+      child: Row(children: [
+        ValueListenableBuilder<ResidentMetrics>(
+            valueListenable: game.residents,
+            builder: (context, r, _) => Text('👥 ${r.population}',
+                style: const TextStyle(
+                    fontSize: 11, fontWeight: FontWeight.bold))),
+        const SizedBox(width: 10),
+        ValueListenableBuilder<EconomyMetrics>(
+            valueListenable: game.economy,
+            builder: (context, e, _) => Text(
+                '🌾 ${e.food.toStringAsFixed(0)}   🪵 ${e.materials.toStringAsFixed(0)}   🪙 ${e.treasury.toStringAsFixed(0)}',
+                style: const TextStyle(
+                    fontSize: 10, fontWeight: FontWeight.bold))),
+      ]));
+}
+
+class _BuildBar extends StatelessWidget {
+  const _BuildBar(
+      {required this.compact, required this.selected, required this.onSelect});
+  final bool compact;
+  final int selected;
+  final ValueChanged<int> onSelect;
+  static const items = [
+    (Icons.home_work, 'Жилые дома'),
+    (Icons.factory, 'Производство'),
+    (Icons.storefront, 'Торговля'),
+    (Icons.add_road, 'Инфраструктура'),
+    (Icons.park, 'Парки и отдых'),
+    (Icons.shield, 'Службы'),
+    (Icons.account_balance, 'Уникальные здания'),
+    (Icons.alt_route, 'Дороги'),
+  ];
+  @override
+  Widget build(BuildContext context) => _GlassPanel(
+        padding: EdgeInsets.all(compact ? 5 : 8),
+        child: Row(children: [
+          if (!compact)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 8),
+              child: Text('СТРОИТЕЛЬСТВО',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 10,
+                    color: Color(0xffffd05c),
+                  )),
+            ),
+          for (var i = 0; i < items.length; i++)
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 2),
+                child: Material(
+                  color: selected == i
+                      ? const Color(0xff245a70)
+                      : const Color(0xff172c34),
+                  borderRadius: BorderRadius.circular(10),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(10),
+                    onTap: () => onSelect(i),
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(vertical: compact ? 8 : 10),
+                      child: Column(mainAxisSize: MainAxisSize.min, children: [
+                        Icon(items[i].$1,
+                            color: selected == i
+                                ? const Color(0xffffd05c)
+                                : Colors.white,
+                            size: compact ? 17 : 22),
+                        if (!compact) ...[
+                          const SizedBox(height: 3),
+                          Text(items[i].$2,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 9)),
+                        ],
+                      ]),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          const SizedBox(width: 4),
+          const Icon(Icons.pause_circle_filled,
+              color: Color(0xffffd05c), size: 28),
+        ]),
+      );
+}
+
+class _InfoCard extends StatelessWidget {
+  const _InfoCard(
+      {required this.title, required this.icon, required this.rows});
+  final String title;
+  final IconData icon;
+  final List<String> rows;
+  @override
+  Widget build(BuildContext context) => _GlassPanel(
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Icon(icon, color: const Color(0xffffcd55), size: 17),
+          const SizedBox(width: 6),
+          Text(title,
+              style: const TextStyle(
+                  fontWeight: FontWeight.w800, fontSize: 10, letterSpacing: .4))
+        ]),
+        const Divider(height: 14, color: Colors.white24),
+        for (final row in rows)
+          Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Text(row, style: const TextStyle(fontSize: 10))),
+      ]));
+}
+
+class _GlassPanel extends StatelessWidget {
+  const _GlassPanel(
+      {required this.child, this.padding = const EdgeInsets.all(11)});
+  final Widget child;
+  final EdgeInsets padding;
+  @override
+  Widget build(BuildContext context) => Container(
+      padding: padding,
+      decoration: BoxDecoration(
+          color: const Color(0xe9152428),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: const Color(0xff66848a)),
+          boxShadow: const [
+            BoxShadow(
+                color: Colors.black38, blurRadius: 12, offset: Offset(0, 4))
+          ]),
+      child: child);
+}

@@ -36,8 +36,10 @@ class IsometricGrid {
     if (columns <= 0 || rows <= 0) {
       throw ArgumentError('Grid dimensions must be positive');
     }
-    if (!tileWidth.isFinite || !tileHeight.isFinite ||
-        tileWidth <= 0 || tileHeight <= 0) {
+    if (!tileWidth.isFinite ||
+        !tileHeight.isFinite ||
+        tileWidth <= 0 ||
+        tileHeight <= 0) {
       throw ArgumentError('Tile dimensions must be finite and positive');
     }
   }
@@ -75,13 +77,15 @@ class IsometricGrid {
       return null;
     }
     final center = cellCenter(GridCell(column, row));
-    final normalizedDistance =
-        (point.x - center.x).abs() / (tileWidth / 2) +
+    final normalizedDistance = (point.x - center.x).abs() / (tileWidth / 2) +
         (point.y - center.y).abs() / (tileHeight / 2);
     if (normalizedDistance > 1.0000001) return null;
     return GridCell(column, row);
   }
 
-  bool contains(GridCell cell) => cell.column >= 0 &&
-      cell.column < columns && cell.row >= 0 && cell.row < rows;
+  bool contains(GridCell cell) =>
+      cell.column >= 0 &&
+      cell.column < columns &&
+      cell.row >= 0 &&
+      cell.row < rows;
 }
