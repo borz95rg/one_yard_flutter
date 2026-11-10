@@ -54,3 +54,23 @@ The Flutter save layer must use an explicit schema version and migrations, and
 must not assume that the HTML save's version number matches its filename. A
 future importer should preserve the HTML save as a read-only legacy format and
 map all supported fields deliberately.
+
+## Stage 2 — versioned save container
+
+Added `lib/persistence/game_save.dart` and `test/game_save_test.dart`.
+
+- Flutter saves use an explicit `format`, `schemaVersion`, UTC timestamp and
+  JSON `payload`.
+- Decoder rejects malformed roots and unsupported future schema versions.
+- Legacy HTML localStorage saves (including the observed `version: 18`) are
+  wrapped without dropping any original fields. The original object is kept in
+  `legacyHtmlSave`; field-by-field conversion is intentionally deferred until
+  typed models are verified.
+- This stage does not yet write to Android storage. The next integration is a
+  repository using `path_provider` (or an equivalent app-private directory),
+  atomic temp-file replacement, and a backup/restore test.
+
+Tests added: Flutter save round-trip, full legacy-object preservation, and
+malformed/unsupported input rejection. Run `flutter test` on a machine with the
+Flutter SDK; this environment has no Flutter or Dart executable, so tests could
+not be executed here.
