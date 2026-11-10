@@ -545,7 +545,7 @@ class SettlementMap extends Component {
 
   static String _buildingName(int kind) => const [
         'жилой дом',
-        'производство',
+        'ферма',
         'рынок',
         'инфраструктура',
         'парк',
@@ -599,6 +599,8 @@ class SettlementMap extends Component {
       dt: dt,
       residentCount: people.residents.length,
       food: market.food,
+      farmCount: _buildings.where((building) => building.kind == 1).length,
+      technologyLevel: civilization.technologyLevel,
     );
     climate = result.state;
     market.food = result.food;
@@ -928,6 +930,28 @@ class SettlementMap extends Component {
       canvas.drawCircle(
           Offset(c.x, c.y - 12), 8, Paint()..color = const Color(0xff3d7d43));
       return;
+    }
+    if (b.kind == 1) {
+      final field = Path()
+        ..moveTo(c.x - 28, c.y + 7)
+        ..lineTo(c.x - 7, c.y - 4)
+        ..lineTo(c.x + 10, c.y + 5)
+        ..lineTo(c.x - 12, c.y + 17)
+        ..close();
+      canvas.drawPath(field, Paint()..color = const Color(0xff765532));
+      final cropColor = climate.seasonIndex == 3
+          ? const Color(0xff9a895d)
+          : climate.seasonIndex == 2
+              ? const Color(0xffd3b24e)
+              : const Color(0xff6e963e);
+      final crops = Paint()
+        ..color = cropColor
+        ..strokeWidth = 1.7;
+      for (var line = 0; line < 4; line++) {
+        final y = c.y + 3 + line * 3.1;
+        canvas.drawLine(Offset(c.x - 24 + line * 1.2, y),
+            Offset(c.x - 4 + line * 1.2, y - 10), crops);
+      }
     }
     final palette = [
       const Color(0xffe4d2a5),
@@ -1298,6 +1322,10 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
             },
           ),
           _line('Мировая торговля', '${civ.worldTradeVolume.floor()}'),
+          _line('Фермы · обрабатываемые поля',
+              '${map._buildings.where((b) => b.kind == 1).length} · ${map._buildings.where((b) => b.kind == 1).length * 4}'),
+          _line('Урожаи · плодородие почвы',
+              '${map.climate.nature['harvests']?.floor() ?? 0} · ${map.climate.nature['soil']?.round() ?? 0}%'),
           _line('Открытые поселения', '${civ.foundedSettlements}'),
           _line('Переселения', '${civ.migrations}'),
         ],
@@ -1735,7 +1763,7 @@ class _BuildBar extends StatelessWidget {
   final ValueChanged<int> onSelect;
   static const items = [
     (Icons.home_work, 'Жилые дома'),
-    (Icons.factory, 'Производство'),
+    (Icons.agriculture, 'Фермы'),
     (Icons.storefront, 'Торговля'),
     (Icons.add_road, 'Инфраструктура'),
     (Icons.park, 'Парки и отдых'),

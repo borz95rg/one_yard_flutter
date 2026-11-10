@@ -18,6 +18,8 @@ class NatureSimulation {
     required double dt,
     required int residentCount,
     required double food,
+    int farmCount = 0,
+    int technologyLevel = 1,
   }) {
     if (!dt.isFinite || dt < 0) throw ArgumentError.value(dt, 'dt');
     var season = state.seasonIndex;
@@ -38,16 +40,27 @@ class NatureSimulation {
       if (season == 1) {
         final yieldBoost =
             max(0.35, nature['soil']! / 100) * (weather == 'Засуха' ? 0.35 : 1);
-        final harvest = max(1, (residentCount * 0.16 * yieldBoost).floor());
+        final harvest = max(
+            1,
+            (residentCount * 0.08 * yieldBoost +
+                    farmCount * 1.2 * yieldBoost *
+                        (1 + (technologyLevel - 1) * .08))
+                .floor());
         nextFood += harvest;
         nature['harvests'] = nature['harvests']! + 1;
-        events.add('Весенний посев и урожай: +$harvest еды');
+        events.add('Весенний посев и ранний сбор с $farmCount ферм: +$harvest еды');
+        nature['cropProgress'] = farmCount > 0 ? 0.18 : 0;
       } else if (season == 2) {
-        final harvest = max(1,
-            (residentCount * 0.24 * max(0.3, nature['soil']! / 100)).floor());
+        final soilYield = max(0.3, nature['soil']! / 100);
+        final weatherYield = weather == 'Засуха' ? .4 : 1.0;
+        final farmHarvest = farmCount * 3.2 * soilYield * weatherYield *
+            (1 + (technologyLevel - 1) * .12);
+        final harvest = max(
+            1, (residentCount * 0.08 * soilYield + farmHarvest).floor());
         nextFood += harvest;
         nature['harvests'] = nature['harvests']! + 1;
-        events.add('Осенний сбор урожая: +$harvest еды');
+        events.add('Осенний сбор урожая с $farmCount ферм: +$harvest еды');
+        nature['cropProgress'] = 0;
       } else {
         events.add('Наступил сезон: ${seasonNames[season]}');
       }
@@ -167,3 +180,4 @@ class NatureTickResult {
   final double residentMoraleDelta;
   final List<String> events;
 }
+
