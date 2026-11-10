@@ -293,7 +293,9 @@ class SettlementGame extends FlameGame {
       tileWidth: SettlementMap.tileW,
       tileHeight: SettlementMap.tileH,
     ).cellAt(IsometricPoint(worldX + origin.x, worldY + origin.y));
-    return cell != null && map.placeBuilding(cell, kind);
+    if (cell == null) return false;
+    if (kind >= 12) return map.paintTerrain(cell, kind - 12);
+    return map.placeBuilding(cell, kind);
   }
 
   @override
@@ -340,6 +342,7 @@ class SettlementMap extends Component {
     const _Building(6, 14, 0),
     const _Building(21, 17, 1),
   ];
+  final Map<int, int> _terrainOverrides = {};
   late ResidentSimulation people = ResidentSimulation.initial(
     sites: _defaultSites(),
     width: tileW * columns,
@@ -390,6 +393,10 @@ class SettlementMap extends Component {
         'civilization': civilization.toJson(),
         'worldState': climate.toJson(),
         'timeOfDay': _timeOfDay,
+        'terrain': {
+          for (final entry in _terrainOverrides.entries)
+            '${entry.key}': entry.value,
+        },
       };
 
   _BusRoute? get _busRoute {
@@ -407,6 +414,22 @@ class SettlementMap extends Component {
     final legacy = save.legacyHtmlSave;
     legacyHtmlSave = legacy;
     final payload = save.payload;
+    final savedTerrain = payload['terrain'];
+    if (savedTerrain is Map) {
+      _terrainOverrides.clear();
+      for (final entry in savedTerrain.entries) {
+        final key = int.tryParse('${entry.key}');
+        final type = entry.value;
+        if (key != null &&
+            key >= 0 &&
+            key < columns * rows &&
+            type is int &&
+            type >= 0 &&
+            type <= 3) {
+          _terrainOverrides[key] = type;
+        }
+      }
+    }
     final savedBuildings = payload['buildings'];
     if (savedBuildings is List) {
       final restored = <_Building>[];
@@ -550,6 +573,8 @@ class SettlementMap extends Component {
         _buildings.any((b) => b.column == cell.column && b.row == cell.row)) {
       return false;
     }
+    final terrain = _terrainOverrides[cell.row * columns + cell.column];
+    if (terrain == 2 || terrain == 3) return false;
     if (kind == 8 && cell.column < 20) return false;
     if (kind == 11 && !_hasAdjacentRoad(cell.column, cell.row)) return false;
     final costs = [8.0, 12, 15, 20, 7, 22, 30, 4, 18, 20, 16, 8];
@@ -565,6 +590,28 @@ class SettlementMap extends Component {
     if (kind == 7 || kind == 11) _busRouteDirty = true;
     recentEvents.insert(
         0, 'Построено: ${_buildingName(kind)} (−${cost.toInt()} строймат.)');
+    return true;
+  }
+
+  bool paintTerrain(GridCell cell, int terrain) {
+    if (terrain < 0 ||
+        terrain > 4 ||
+        _buildings.any((b) => b.column == cell.column && b.row == cell.row)) {
+      return false;
+    }
+    final key = cell.row * columns + cell.column;
+    if (terrain == 4) {
+      if (_terrainOverrides.remove(key) == null) return true;
+      recentEvents.insert(0, 'Клетка карты возвращена к исходному ландшафту');
+    } else {
+      if (_terrainOverrides[key] == terrain) return true;
+      _terrainOverrides[key] = terrain;
+      final name = const ['луг', 'лес', 'вода', 'холм'][terrain];
+      recentEvents.insert(0, 'На карте создан участок: $name');
+    }
+    if (recentEvents.length > 8) {
+      recentEvents.removeRange(8, recentEvents.length);
+    }
     return true;
   }
 
@@ -705,6 +752,8 @@ class SettlementMap extends Component {
         const Rect.fromLTWH(-884, -468, 1768, 936),
         Paint()..filterQuality = FilterQuality.high,
       );
+      _drawTerrain(canvas, overridesOnly: true);
+      _drawTrees(canvas, overridesOnly: true);
       _drawFactionTerritories(canvas);
     } else {
       _drawTerrain(canvas);
@@ -1060,10 +1109,12 @@ class SettlementMap extends Component {
     }
   }
 
-  void _drawTerrain(Canvas canvas) {
+  void _drawTerrain(Canvas canvas, {bool overridesOnly = false}) {
     final fill = Paint();
     for (var row = 0; row < rows; row++) {
       for (var col = 0; col < columns; col++) {
+        final type = _terrainOverrides[row * columns + col];
+        if (overridesOnly && type == null) continue;
         final c = cellCenter(col, row);
         final diamond = Path()
           ..moveTo(c.x, c.y - tileH / 2)
@@ -1071,8 +1122,14 @@ class SettlementMap extends Component {
           ..lineTo(c.x, c.y + tileH / 2)
           ..lineTo(c.x - tileW / 2, c.y)
           ..close();
-        fill.color = Color.lerp(const Color(0xff467b48),
-            const Color(0xff8da75d), ((col * 19 + row * 13) % 9) / 100)!;
+        fill.color = switch (type) {
+          0 => const Color(0xff89a94d),
+          1 => const Color(0xff285b35),
+          2 => const Color(0xaa2789b6),
+          3 => const Color(0xff8a795a),
+          _ => Color.lerp(const Color(0xff467b48), const Color(0xff8da75d),
+              ((col * 19 + row * 13) % 9) / 100)!,
+        };
         canvas.drawPath(diamond, fill);
         canvas.drawPath(
             diamond,
@@ -1080,6 +1137,20 @@ class SettlementMap extends Component {
               ..color = const Color(0x2276a75b)
               ..style = PaintingStyle.stroke
               ..strokeWidth = 1);
+        if (type == 3) {
+          final hill = Path()
+            ..moveTo(c.x - 16, c.y + 5)
+            ..lineTo(c.x, c.y - 13)
+            ..lineTo(c.x + 16, c.y + 5)
+            ..close();
+          canvas.drawPath(hill, Paint()..color = const Color(0xffb5a17b));
+          canvas.drawPath(
+              hill,
+              Paint()
+                ..color = const Color(0xff5d5344)
+                ..style = PaintingStyle.stroke
+                ..strokeWidth = 1.5);
+        }
       }
     }
   }
@@ -1137,9 +1208,25 @@ class SettlementMap extends Component {
           ..strokeCap = StrokeCap.round);
   }
 
-  void _drawTrees(Canvas canvas) {
+  void _drawTrees(Canvas canvas, {bool overridesOnly = false}) {
+    if (overridesOnly) {
+      for (final entry in _terrainOverrides.entries) {
+        if (entry.value != 1) continue;
+        final col = entry.key % columns, row = entry.key ~/ columns;
+        final c = cellCenter(col, row);
+        canvas.drawCircle(Offset(c.x - 8, c.y - 4), 8,
+            Paint()..color = const Color(0xff387b3c));
+        canvas.drawCircle(Offset(c.x + 6, c.y + 2), 7,
+            Paint()..color = const Color(0xff519348));
+        canvas.drawCircle(
+            Offset(c.x, c.y - 1), 6, Paint()..color = const Color(0xff77a951));
+      }
+      return;
+    }
     for (var row = 1; row < rows; row += 3) {
       for (var col = 1; col < columns; col += 3) {
+        final override = _terrainOverrides[row * columns + col];
+        if (override != null && override != 1) continue;
         if ((col * 3 + row * 5) % 7 < 3 || col > 22) continue;
         final c = cellCenter(col, row);
         canvas.drawOval(
@@ -2209,8 +2296,20 @@ class _BuildBar extends StatelessWidget {
               ),
             ),
           const SizedBox(width: 4),
-          const Icon(Icons.pause_circle_filled,
-              color: Color(0xffffd05c), size: 28),
+          PopupMenuButton<int>(
+            tooltip: 'Редактор карты',
+            icon: Icon(Icons.layers,
+                color: selected >= 12 ? const Color(0xffffd05c) : Colors.white,
+                size: 25),
+            onSelected: (terrain) => onSelect(12 + terrain),
+            itemBuilder: (context) => const [
+              PopupMenuItem(value: 0, child: Text('🌱 Луг')),
+              PopupMenuItem(value: 1, child: Text('🌲 Лес')),
+              PopupMenuItem(value: 2, child: Text('🌊 Вода')),
+              PopupMenuItem(value: 3, child: Text('⛰️ Холм')),
+              PopupMenuItem(value: 4, child: Text('↩️ Исходный ландшафт')),
+            ],
+          ),
         ]),
       );
 }
