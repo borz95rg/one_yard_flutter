@@ -43,6 +43,8 @@ class ResidentAgent {
     required this.morale,
     required this.wallet,
     required this.health,
+    this.generation = 0,
+    this.familyId,
   });
 
   final int id;
@@ -54,6 +56,9 @@ class ResidentAgent {
   double morale;
   int wallet;
   double health;
+  final int generation;
+  int? familyId;
+  double birthTimer = 0;
   double education = 0;
   double skill = 0;
   String? job;
@@ -74,8 +79,29 @@ class ResidentAgent {
   bool sick = false;
 }
 
+class ResidentMetrics {
+  const ResidentMetrics({
+    required this.population,
+    required this.children,
+    required this.adults,
+    required this.elders,
+    required this.couples,
+    required this.familyLines,
+    required this.generations,
+  });
+
+  final int population;
+  final int children;
+  final int adults;
+  final int elders;
+  final int couples;
+  final int familyLines;
+  final int generations;
+}
+
 /// Port of the HTML game's independent resident movement and need loop.
-/// Social, family, health, job, and market systems remain separate migrations.
+/// Family formation and social links are ported as a basic slice; faction,
+/// health, job, and market systems remain separate migrations.
 class ResidentSimulation {
   ResidentSimulation({
     required this.residents,
@@ -129,12 +155,212 @@ class ResidentSimulation {
   final double width;
   final double height;
   final Random _random;
+  double _socialTimer = 0;
+  double _familyTimer = 0;
+  int _nextId = 1;
+
+  ResidentMetrics get metrics {
+    final lineages = residents.map((r) => r.familyId ?? r.id).toSet();
+    final maxGeneration = residents.fold<int>(
+      0,
+      (current, resident) => max(current, resident.generation),
+    );
+    return ResidentMetrics(
+      population: residents.length,
+      children: residents.where((r) => r.age < 42).length,
+      adults: residents.where((r) => r.age >= 42 && r.age < 620).length,
+      elders: residents.where((r) => r.age >= 620).length,
+      couples:
+          residents.where((r) => r.spouseId != null && r.gender == 'М').length,
+      familyLines: lineages.length,
+      generations: maxGeneration + 1,
+    );
+  }
+
+  void _initializeIds() {
+    if (residents.isNotEmpty && _nextId == 1) {
+      _nextId = residents.map((resident) => resident.id).reduce(max) + 1;
+    }
+  }
 
   void update(double dt, {bool isNight = false}) {
     if (!dt.isFinite || dt < 0) throw ArgumentError.value(dt, 'dt');
+    _initializeIds();
     for (final resident in residents) {
       _updateResident(resident, dt, isNight: isNight);
     }
+    _updateSocialLife(dt);
+    _updateFamilies(dt);
+  }
+
+  void _updateSocialLife(double dt) {
+    _socialTimer += dt;
+    if (_socialTimer < 3.5) return;
+    _socialTimer = 0;
+    for (var i = 0; i < residents.length; i++) {
+      final resident = residents[i];
+      ResidentAgent? nearest;
+      var nearestDistance = 72.0;
+      for (var j = 0; j < residents.length; j++) {
+        if (i == j) continue;
+        final other = residents[j];
+        final dx = resident.position.x - other.position.x;
+        final dy = resident.position.y - other.position.y;
+        final distance = sqrt(dx * dx + dy * dy);
+        if (distance < nearestDistance) {
+          nearest = other;
+          nearestDistance = distance;
+        }
+      }
+      final other = nearest;
+      if (other == null ||
+          resident.friendIds.contains(other.id) ||
+          resident.rivalIds.contains(other.id) ||
+          _random.nextDouble() >= 0.24) {
+        continue;
+      }
+      final friends = _random.nextDouble() < 0.78;
+      final ownLinks = friends ? resident.friendIds : resident.rivalIds;
+      final otherLinks = friends ? other.friendIds : other.rivalIds;
+      ownLinks.add(other.id);
+      otherLinks.add(resident.id);
+      final limit = friends ? 8 : 5;
+      if (ownLinks.length > limit) ownLinks.removeAt(0);
+      if (otherLinks.length > limit) otherLinks.removeAt(0);
+    }
+  }
+
+  void _updateFamilies(double dt) {
+    _familyTimer += dt;
+    for (final resident in residents) {
+      resident.age += dt;
+    }
+    if (_familyTimer >= 5) {
+      _familyTimer -= 5;
+      for (final adult in residents) {
+        if (adult.spouseId != null || _lifeStage(adult.age) != 'взрослый') {
+          continue;
+        }
+        ResidentAgent? candidate;
+        for (final other in residents) {
+          if (adult.friendIds.contains(other.id) &&
+              other.spouseId == null &&
+              other.gender != adult.gender &&
+              _lifeStage(other.age) == 'взрослый' &&
+              (adult.familyId == null ||
+                  other.familyId == null ||
+                  adult.familyId == other.familyId)) {
+            candidate = other;
+            break;
+          }
+        }
+        if (candidate != null && _random.nextDouble() < 0.12) {
+          adult.spouseId = candidate.id;
+          candidate.spouseId = adult.id;
+          final family = [adult.id, candidate.id].reduce(min);
+          adult.familyId = family;
+          candidate.familyId = family;
+          adult.morale = _clamp(adult.morale + 0.18);
+          candidate.morale = _clamp(candidate.morale + 0.18);
+        }
+      }
+
+      // The source caps household population at 36 for simulation performance.
+      final adults = List<ResidentAgent>.of(residents);
+      for (final parent in adults) {
+        if (parent.spouseId == null ||
+            parent.gender != 'Ж' ||
+            residents.length >= 36) {
+          continue;
+        }
+        final partner = residents
+            .where((resident) => resident.id == parent.spouseId)
+            .firstOrNull;
+        if (partner == null ||
+            parent.age < 75 ||
+            parent.age > 480 ||
+            !_hasNearbyHome(parent)) {
+          continue;
+        }
+        parent.birthTimer += 5;
+        if (parent.birthTimer >= 95 && _random.nextDouble() < 0.45) {
+          parent.birthTimer = 0;
+          _createChild(parent, partner);
+        }
+      }
+    }
+
+    for (final child in residents) {
+      if (child.age >= 42 ||
+          child.parentIds.isEmpty ||
+          child.activity == ResidentActivity.working) {
+        continue;
+      }
+      ResidentAgent? parent;
+      for (final candidate in residents) {
+        if (child.parentIds.contains(candidate.id)) {
+          parent = candidate;
+          break;
+        }
+      }
+      if (parent == null) continue;
+      final dx = parent.position.x - child.position.x;
+      final dy = parent.position.y - child.position.y;
+      if (sqrt(dx * dx + dy * dy) > 75) {
+        final factor = min(0.025, dt * 0.012);
+        _move(child, dx * factor, dy * factor);
+      }
+    }
+  }
+
+  bool _hasNearbyHome(ResidentAgent resident) => sites.any((site) {
+        if (site.disabled ||
+            !_matches(
+                site.role.toLowerCase(), ['дом', 'пещера', 'крыша', 'склад'])) {
+          return false;
+        }
+        final dx = site.position.x - resident.position.x;
+        final dy = site.position.y - resident.position.y;
+        return sqrt(dx * dx + dy * dy) < 190;
+      });
+
+  void _createChild(ResidentAgent parent, ResidentAgent partner) {
+    final inherits = _random.nextDouble() < 0.68;
+    final personality = inherits
+        ? parent.personality
+        : const ['builder', 'explorer', 'mystic', 'normal'][_random.nextInt(4)];
+    final id = _nextId++;
+    final family =
+        parent.familyId ?? partner.familyId ?? min(parent.id, partner.id);
+    residents.add(ResidentAgent(
+      id: id,
+      position: IsometricPoint(
+        (parent.position.x + partner.position.x) / 2,
+        (parent.position.y + partner.position.y) / 2,
+      ),
+      gender: _random.nextBool() ? 'М' : 'Ж',
+      age: 0,
+      personality: personality,
+      needs: ResidentNeeds(hunger: 0.15, thirst: 0.15, shelter: 0.1),
+      morale: 0.8,
+      wallet: 0,
+      health: 1,
+      generation: max(parent.generation, partner.generation) + 1,
+      familyId: family,
+    )
+      ..parentIds.addAll([parent.id, partner.id])
+      ..skill = (parent.skill + partner.skill) * 0.04
+      ..education = (parent.education + partner.education) * 0.06);
+    parent.childIds.add(id);
+    partner.childIds.add(id);
+  }
+
+  static String _lifeStage(double age) {
+    if (age < 18) return 'малыш';
+    if (age < 42) return 'ребёнок';
+    if (age < 72) return 'подросток';
+    if (age < 620) return 'взрослый';
+    return 'старейшина';
   }
 
   void _updateResident(ResidentAgent resident, double dt,

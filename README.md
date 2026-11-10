@@ -105,12 +105,16 @@ are not wired into this screen yet.
 - Added the source's day/night need rate for shelter and animated residents at
   their simulated world positions. The displayed population now comes from the
   simulation.
+- Ported recurring nearby friendship/rivalry formation, resident aging, spouse
+  matching, household shelter checks, child births, inherited personality and
+  child-following behavior. The resident panel shows live age, family and
+  generation counts.
 - Construction sample buttons register their resulting site as a place where
   residents can satisfy needs.
 
-Resident state is not yet connected to families, jobs, friendships, health
-outbreaks, the market, faction systems or saved games. Those remain explicit
-porting work; this stage does not claim the feature list is complete.
+Resident state is not yet connected to assigned jobs, health outbreaks, the
+market, faction systems or saved games. Those remain explicit porting work;
+this stage does not claim the feature list is complete.
 
 ## UI direction confirmed
 

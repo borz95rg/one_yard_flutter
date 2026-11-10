@@ -79,7 +79,7 @@ class _SettlementScreenState extends State<SettlementScreen> {
                     top: 122,
                     bottom: 118,
                     width: 222,
-                    child: _SidePanel(population: game.residentCount)),
+                    child: _SidePanel(metrics: game.residentMetrics)),
               if (!compact)
                 const Positioned(
                     right: 12, top: 122, width: 218, child: _RightPanel()),
@@ -116,6 +116,17 @@ class _SettlementScreenState extends State<SettlementScreen> {
 class SettlementGame extends FlameGame {
   late final SettlementMap map;
   final ValueNotifier<int> residentCount = ValueNotifier<int>(8);
+  final ValueNotifier<ResidentMetrics> residentMetrics = ValueNotifier(
+    const ResidentMetrics(
+      population: 8,
+      children: 0,
+      adults: 8,
+      elders: 0,
+      couples: 0,
+      familyLines: 8,
+      generations: 1,
+    ),
+  );
   double _refreshTimer = 0;
 
   @override
@@ -135,12 +146,14 @@ class SettlementGame extends FlameGame {
     if (_refreshTimer >= 0.5 && isLoaded) {
       _refreshTimer = 0;
       residentCount.value = map.people.residents.length;
+      residentMetrics.value = map.people.metrics;
     }
   }
 
   @override
   void onRemove() {
     residentCount.dispose();
+    residentMetrics.dispose();
     super.onRemove();
   }
 
@@ -546,23 +559,23 @@ class _Resource extends StatelessWidget {
 }
 
 class _SidePanel extends StatelessWidget {
-  const _SidePanel({required this.population});
-  final ValueListenable<int> population;
+  const _SidePanel({required this.metrics});
+  final ValueListenable<ResidentMetrics> metrics;
   @override
   Widget build(BuildContext context) => SingleChildScrollView(
           child: Column(children: [
-        ValueListenableBuilder<int>(
-            valueListenable: population,
-            builder: (context, count, _) => _InfoCard(
+        ValueListenableBuilder<ResidentMetrics>(
+            valueListenable: metrics,
+            builder: (context, data, _) => _InfoCard(
                     title: 'ЖИТЕЛИ ГОРОДА',
                     icon: Icons.people_alt,
                     rows: [
-                      'Население        $count',
-                      'Поведение          активно',
-                      'Счастье                 68%',
-                      'Занятость           считать',
-                      'Образование            0%',
-                      'Здоровье              100%'
+                      'Население          ${data.population}',
+                      'Взрослые             ${data.adults}',
+                      'Дети                  ${data.children}',
+                      'Старейшины             ${data.elders}',
+                      'Семьи                  ${data.couples}',
+                      'Поколения         ${data.generations}',
                     ])),
         const SizedBox(height: 9),
         _InfoCard(title: 'ЭКОНОМИКА', icon: Icons.paid, rows: [
