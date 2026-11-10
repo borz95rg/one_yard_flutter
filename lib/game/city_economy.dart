@@ -13,6 +13,7 @@ class MarketState {
     this.goodsPrice = 4,
     this.treasury = 0,
     this.taxRate = 0.08,
+    this.storageCapacity = 9999,
   });
 
   double food;
@@ -24,6 +25,9 @@ class MarketState {
   double goodsPrice;
   double treasury;
   double taxRate;
+  double storageCapacity;
+  double fishProduction = 0;
+  double meatProduction = 0;
   double _timer = 0;
 
   EconomyMetrics get metrics => EconomyMetrics(
@@ -45,6 +49,9 @@ class MarketState {
         'goodsPrice': goodsPrice,
         'treasury': treasury,
         'taxRate': taxRate,
+        'storageCapacity': storageCapacity,
+        'fishProduction': fishProduction,
+        'meatProduction': meatProduction,
         'timer': _timer,
       };
 
@@ -58,7 +65,11 @@ class MarketState {
         goodsPrice: _read(data, 'goodsPrice', 4),
         treasury: _read(data, 'treasury', 0),
         taxRate: _read(data, 'taxRate', .08).clamp(0, .5).toDouble(),
-      ).._timer = _read(data, 'timer', 0).clamp(0, 10).toDouble();
+        storageCapacity: _read(data, 'storageCapacity', 9999),
+      )
+        ..fishProduction = _read(data, 'fishProduction', 0)
+        ..meatProduction = _read(data, 'meatProduction', 0)
+        .._timer = _read(data, 'timer', 0).clamp(0, 10).toDouble();
 
   /// Ports updateMarketEconomy() in the HTML source as a ten-second market
   /// step. Site roles supply the starting production and trade buildings.
@@ -68,26 +79,43 @@ class MarketState {
     required List<ResidentSite> sites,
     int technologyLevel = 1,
     int eraIndex = 0,
+    int warehouses = 0,
   }) {
     if (!dt.isFinite || dt < 0) throw ArgumentError.value(dt, 'dt');
+    storageCapacity = 9999 + max(0, warehouses) * 1000;
     _timer += dt;
     if (_timer < 10) return const [];
     _timer %= 10;
 
-    _assignJobs(residents);
+    _assignJobs(residents, sites);
     final adults = residents.where((r) => r.age >= 42 && r.age < 620).toList();
     final farmers = adults.where((r) => r.job == 'Фермер').length;
     final builders = adults.where((r) => r.job == 'Строитель').length;
     final traders = adults.where((r) => r.job == 'Торговец').length;
     final artisans = adults.where((r) => r.job == 'Ремесленник').length;
     final techBonus = 1 + (technologyLevel - 1) * 0.055 + eraIndex * 0.035;
-    final foodMade = (farmers * 1.8 + adults.length * 0.08) * techBonus;
+    final fishers = adults.where((r) => r.job == 'Рыбак').length;
+    final herders = adults.where((r) => r.job == 'Скотник').length;
+    fishProduction = min(fishers,
+            sites.where((s) => s.role == 'рыболовство' && !s.disabled).length) *
+        .7;
+    meatProduction = min(
+            herders,
+            sites
+                .where((s) => s.role == 'животноводство' && !s.disabled)
+                .length) *
+        .9;
+    final foodMade = (farmers * 1.8 +
+            adults.length * 0.08 +
+            fishProduction +
+            meatProduction) *
+        techBonus;
     final materialsMade = builders * 1.15 * techBonus;
     final goodsMade = (artisans * 1.1 + traders * 0.35) * techBonus;
     final foodUsed = residents.length * 0.34;
-    food = _clamp(food + foodMade - foodUsed, 0, 9999);
-    materials = _clamp(materials + materialsMade, 0, 9999);
-    goods = _clamp(goods + goodsMade, 0, 9999);
+    food = _clamp(food + foodMade - foodUsed, 0, storageCapacity);
+    materials = _clamp(materials + materialsMade, 0, storageCapacity);
+    goods = _clamp(goods + goodsMade, 0, storageCapacity);
 
     final marketBuildings =
         sites.where((s) => s.role == 'рынок' && !s.disabled).length;
@@ -135,7 +163,8 @@ class MarketState {
     return const [];
   }
 
-  static void _assignJobs(List<ResidentAgent> residents) {
+  static void _assignJobs(
+      List<ResidentAgent> residents, List<ResidentSite> sites) {
     for (final resident in residents) {
       if (resident.age < 42) {
         resident.job = resident.age < 18 ? 'Малыш' : 'Ученик';
@@ -157,6 +186,20 @@ class MarketState {
           _ => 'Фермер',
         };
       }
+    }
+    final available = residents
+        .where((r) => r.age >= 42 && r.age < 620 && r.education < 58)
+        .toList();
+    var workerIndex = 0;
+    final fisheryCount =
+        sites.where((s) => s.role == 'рыболовство' && !s.disabled).length;
+    for (var i = 0; i < fisheryCount && workerIndex < available.length; i++) {
+      available[workerIndex++].job = 'Рыбак';
+    }
+    final livestockCount =
+        sites.where((s) => s.role == 'животноводство' && !s.disabled).length;
+    for (var i = 0; i < livestockCount && workerIndex < available.length; i++) {
+      available[workerIndex++].job = 'Скотник';
     }
   }
 

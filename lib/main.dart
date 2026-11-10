@@ -400,7 +400,7 @@ class SettlementMap extends Component {
             row >= 0 &&
             row < rows &&
             kind >= 0 &&
-            kind < 8) {
+            kind < 11) {
           restored.add(_Building(col, row, kind,
               visible:
                   item['visible'] is bool ? item['visible'] as bool : true));
@@ -525,11 +525,12 @@ class SettlementMap extends Component {
 
   bool placeBuilding(GridCell cell, int kind) {
     if (kind < 0 ||
-        kind > 7 ||
+        kind > 10 ||
         _buildings.any((b) => b.column == cell.column && b.row == cell.row)) {
       return false;
     }
-    final costs = [8.0, 12, 15, 20, 7, 22, 30, 4];
+    if (kind == 8 && cell.column < 20) return false;
+    final costs = [8.0, 12, 15, 20, 7, 22, 30, 4, 18, 20, 16];
     final cost = costs[kind];
     if (market.materials < cost) {
       return false;
@@ -552,6 +553,9 @@ class SettlementMap extends Component {
         'служба',
         'уникальное здание',
         'дорога',
+        'рыбная пристань',
+        'животноводческая ферма',
+        'склад',
       ][kind];
 
   static String _roleForKind(int kind) => switch (kind) {
@@ -562,6 +566,9 @@ class SettlementMap extends Component {
         5 => 'больница',
         6 => 'памятник',
         7 => 'дорога',
+        8 => 'рыболовство',
+        9 => 'животноводство',
+        10 => 'склад',
         _ => 'совет',
       };
 
@@ -577,6 +584,7 @@ class SettlementMap extends Component {
       sites: people.sites,
       technologyLevel: civilization.technologyLevel,
       eraIndex: civilization.eraIndex,
+      warehouses: _buildings.where((building) => building.kind == 10).length,
     );
     final cityEvents = civilization.update(
       dt: dt,
@@ -603,7 +611,7 @@ class SettlementMap extends Component {
       technologyLevel: civilization.technologyLevel,
     );
     climate = result.state;
-    market.food = result.food;
+    market.food = math.min(result.food, market.storageCapacity);
     if (result.residentMoraleDelta != 0) {
       for (final resident in people.residents) {
         resident.morale = (resident.morale + result.residentMoraleDelta)
@@ -793,9 +801,8 @@ class SettlementMap extends Component {
       final length = lengths[i];
       if (remaining <= length || i == lengths.length - 1) {
         final from = points[i], to = points[i + 1];
-        final fraction = length == 0
-            ? 0.0
-            : (remaining / length).clamp(0, 1).toDouble();
+        final fraction =
+            length == 0 ? 0.0 : (remaining / length).clamp(0, 1).toDouble();
         return (from + (to - from) * fraction, to - from);
       }
       remaining -= length;
@@ -923,6 +930,31 @@ class SettlementMap extends Component {
           Paint()..color = const Color(0xff867a5e));
       return;
     }
+    if (b.kind == 8) {
+      canvas.drawLine(
+          Offset(c.x - 5, c.y + 3),
+          Offset(c.x + 28, c.y + 3),
+          Paint()
+            ..color = const Color(0xff8b6744)
+            ..strokeWidth = 6
+            ..strokeCap = StrokeCap.round);
+      for (var plank = 0; plank < 4; plank++) {
+        final x = c.x + plank * 7;
+        canvas.drawLine(
+            Offset(x, c.y - 2),
+            Offset(x, c.y + 8),
+            Paint()
+              ..color = const Color(0xffc49a62)
+              ..strokeWidth = 2);
+      }
+      canvas.drawLine(
+          Offset(c.x + 22, c.y - 4),
+          Offset(c.x + 22, c.y + 6),
+          Paint()
+            ..color = const Color(0xffe5d8a6)
+            ..strokeWidth = 2);
+      return;
+    }
     if (b.kind == 4) {
       canvas.drawOval(
           Rect.fromCenter(center: Offset(c.x, c.y + 2), width: 41, height: 17),
@@ -953,6 +985,28 @@ class SettlementMap extends Component {
             Offset(c.x - 4 + line * 1.2, y - 10), crops);
       }
     }
+    if (b.kind == 9) {
+      for (var animal = 0; animal < 3; animal++) {
+        final point = Offset(c.x - 20 + animal * 8, c.y + 14);
+        canvas.drawOval(
+            Rect.fromCenter(center: point, width: 7, height: 5),
+            Paint()
+              ..color = animal.isEven
+                  ? const Color(0xffeee3c7)
+                  : const Color(0xff79553b));
+        canvas.drawCircle(point + const Offset(3, -1), 2,
+            Paint()..color = const Color(0xff2a2924));
+      }
+    }
+    if (b.kind == 10) {
+      for (var row = 0; row < 2; row++) {
+        for (var crate = 0; crate < 3; crate++) {
+          canvas.drawRect(
+              Rect.fromLTWH(c.x - 11 + crate * 8, c.y + 5 + row * 6, 6, 5),
+              Paint()..color = const Color(0xffb78242));
+        }
+      }
+    }
     final palette = [
       const Color(0xffe4d2a5),
       const Color(0xffc67e4b),
@@ -961,7 +1015,9 @@ class SettlementMap extends Component {
       const Color(0xffc1ad79),
       const Color(0xffbacbd0),
       const Color(0xffd3c19d),
-      const Color(0xff80785d)
+      const Color(0xff80785d),
+      const Color(0xff9a754d),
+      const Color(0xffb1874f),
     ];
     final base = palette[b.kind.clamp(0, palette.length - 1)];
     final shadow = Path()
@@ -992,7 +1048,12 @@ class SettlementMap extends Component {
       ..lineTo(c.x + 20, c.y - 15)
       ..lineTo(c.x, c.y - 5)
       ..close();
-    canvas.drawPath(roof, Paint()..color = const Color(0xff9d4937));
+    final roofColor = b.kind == 9
+        ? const Color(0xff76563a)
+        : b.kind == 10
+            ? const Color(0xff996333)
+            : const Color(0xff9d4937);
+    canvas.drawPath(roof, Paint()..color = roofColor);
     canvas.drawRect(Rect.fromLTWH(c.x - 3, c.y - 2, 6, 12),
         Paint()..color = const Color(0xff563d2b));
     canvas.drawRect(Rect.fromLTWH(c.x - 12, c.y - 8, 5, 5),
@@ -1141,7 +1202,8 @@ class _TopBar extends StatelessWidget {
                   onPressed: () =>
                       _showCivilizationPanel(context, game, 'Достижения')),
               _NavButton(Icons.public, 'Мир',
-                  onPressed: () => _showCivilizationPanel(context, game, 'Мир')),
+                  onPressed: () =>
+                      _showCivilizationPanel(context, game, 'Мир')),
               _NavButton(Icons.history, 'Летопись',
                   onPressed: () =>
                       _showCivilizationPanel(context, game, 'Летопись')),
@@ -1326,6 +1388,10 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
               '${map._buildings.where((b) => b.kind == 1).length} · ${map._buildings.where((b) => b.kind == 1).length * 4}'),
           _line('Урожаи · плодородие почвы',
               '${map.climate.nature['harvests']?.floor() ?? 0} · ${map.climate.nature['soil']?.round() ?? 0}%'),
+          _line('Рыба · мясо за производственный цикл',
+              '${economy.fishProduction.toStringAsFixed(1)} · ${economy.meatProduction.toStringAsFixed(1)}'),
+          _line('Склады · вместимость каждого ресурса',
+              '${map._buildings.where((b) => b.kind == 10).length} · ${economy.storageCapacity.floor()}'),
           _line('Открытые поселения', '${civ.foundedSettlements}'),
           _line('Переселения', '${civ.migrations}'),
         ],
@@ -1347,13 +1413,13 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
                 city.unlocked
                     ? 'казна ${city.treasury.floor()} · армия ${city.army.floor()}'
                     : 'откроется при ${city.populationThreshold} жителях'),
-          _line('Миграции', '${civ.migrations} · городам свой бюджет, запасы и оборона'),
+          _line('Миграции',
+              '${civ.migrations} · городам свой бюджет, запасы и оборона'),
           const Divider(),
           const Text('Соседние государства',
               style: TextStyle(fontWeight: FontWeight.w800)),
           for (final state in civ.foreignNations)
-            _line(
-                '${state.name} · ${state.population} жителей',
+            _line('${state.name} · ${state.population} жителей',
                 'казна ${state.treasury.floor()} · армия ${state.army} · связь ${state.relation.round()}%'),
         ],
       'Летопись' => <Widget>[
@@ -1368,8 +1434,8 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
               contentPadding: EdgeInsets.zero,
               leading: CircleAvatar(
                 radius: 17,
-                child: Text('${entry.year}',
-                    style: const TextStyle(fontSize: 10)),
+                child:
+                    Text('${entry.year}', style: const TextStyle(fontSize: 10)),
               ),
               title: Text(entry.text),
               subtitle: Text(entry.category),
@@ -1430,10 +1496,16 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
           _line('Раскрыто', '${civ.crimesResolved}'),
           _line('Пожары', '${civ.fireIncidents}'),
           _line('Предотвращено возгораний', '${civ.firesPrevented}'),
-          _line('Полиция',
-              civ.civicBuildings.contains('Полицейский участок') ? 'участок открыт' : 'нет участка'),
-          _line('Пожарная часть',
-              civ.civicBuildings.contains('Пожарная часть') ? 'служба работает' : 'нет службы'),
+          _line(
+              'Полиция',
+              civ.civicBuildings.contains('Полицейский участок')
+                  ? 'участок открыт'
+                  : 'нет участка'),
+          _line(
+              'Пожарная часть',
+              civ.civicBuildings.contains('Пожарная часть')
+                  ? 'служба работает'
+                  : 'нет службы'),
         ],
       'Культура' => <Widget>[
           _line('Культурный уровень', '${civ.cultureLevel} / 10'),
@@ -1770,6 +1842,9 @@ class _BuildBar extends StatelessWidget {
     (Icons.shield, 'Службы'),
     (Icons.account_balance, 'Уникальные здания'),
     (Icons.alt_route, 'Дороги'),
+    (Icons.set_meal, 'Рыболовство'),
+    (Icons.pets, 'Скот'),
+    (Icons.warehouse, 'Склады'),
   ];
   @override
   Widget build(BuildContext context) => _GlassPanel(
@@ -1895,9 +1970,8 @@ class _WorldMapPainter extends CustomPainter {
         Rect.fromCenter(
             center: Offset(x, y), width: 9 + i % 5 * 5, height: 5 + i % 4 * 3),
         Paint()
-          ..color = i.isEven
-              ? const Color(0x2234442b)
-              : const Color(0x22e2cf8a),
+          ..color =
+              i.isEven ? const Color(0x2234442b) : const Color(0x22e2cf8a),
       );
     }
     final river = Path()
@@ -1928,10 +2002,10 @@ class _WorldMapPainter extends CustomPainter {
       ..strokeWidth = 3
       ..strokeCap = StrokeCap.round;
     for (var i = 1; i < openCities.length; i++) {
-      final a = Offset(openCities[i - 1].x * size.width,
-          openCities[i - 1].y * size.height);
-      final b = Offset(openCities[i].x * size.width,
-          openCities[i].y * size.height);
+      final a = Offset(
+          openCities[i - 1].x * size.width, openCities[i - 1].y * size.height);
+      final b =
+          Offset(openCities[i].x * size.width, openCities[i].y * size.height);
       canvas.drawLine(a, b, road);
       canvas.drawLine(
           a,
@@ -1948,12 +2022,8 @@ class _WorldMapPainter extends CustomPainter {
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1.4;
         for (var segment = 0; segment < 8; segment++) {
-          canvas.drawArc(
-              Rect.fromCircle(center: center, radius: 8),
-              segment * math.pi / 4,
-              math.pi / 8,
-              false,
-              outline);
+          canvas.drawArc(Rect.fromCircle(center: center, radius: 8),
+              segment * math.pi / 4, math.pi / 8, false, outline);
         }
         continue;
       }
@@ -1961,8 +2031,12 @@ class _WorldMapPainter extends CustomPainter {
       final radius = capital ? 11.0 : 8.0;
       canvas.drawCircle(center + const Offset(0, 2), radius + 2,
           Paint()..color = const Color(0x660f2119));
-      canvas.drawCircle(center, radius,
-          Paint()..color = capital ? const Color(0xffffd05c) : const Color(0xffe9ead4));
+      canvas.drawCircle(
+          center,
+          radius,
+          Paint()
+            ..color =
+                capital ? const Color(0xffffd05c) : const Color(0xffe9ead4));
       canvas.drawCircle(
           center,
           radius,
@@ -1975,8 +2049,7 @@ class _WorldMapPainter extends CustomPainter {
               center: center.translate(-2, -1), width: 4, height: 6),
           Paint()..color = const Color(0xff557c68));
       canvas.drawRect(
-          Rect.fromCenter(
-              center: center.translate(3, -2), width: 4, height: 8),
+          Rect.fromCenter(center: center.translate(3, -2), width: 4, height: 8),
           Paint()..color = const Color(0xff8aa181));
       final label = TextPainter(
         text: TextSpan(

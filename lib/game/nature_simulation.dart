@@ -43,20 +43,26 @@ class NatureSimulation {
         final harvest = max(
             1,
             (residentCount * 0.08 * yieldBoost +
-                    farmCount * 1.2 * yieldBoost *
+                    farmCount *
+                        1.2 *
+                        yieldBoost *
                         (1 + (technologyLevel - 1) * .08))
                 .floor());
         nextFood += harvest;
         nature['harvests'] = nature['harvests']! + 1;
-        events.add('Весенний посев и ранний сбор с $farmCount ферм: +$harvest еды');
+        events.add(
+            'Весенний посев и ранний сбор с $farmCount ферм: +$harvest еды');
         nature['cropProgress'] = farmCount > 0 ? 0.18 : 0;
       } else if (season == 2) {
         final soilYield = max(0.3, nature['soil']! / 100);
         final weatherYield = weather == 'Засуха' ? .4 : 1.0;
-        final farmHarvest = farmCount * 3.2 * soilYield * weatherYield *
+        final farmHarvest = farmCount *
+            3.2 *
+            soilYield *
+            weatherYield *
             (1 + (technologyLevel - 1) * .12);
-        final harvest = max(
-            1, (residentCount * 0.08 * soilYield + farmHarvest).floor());
+        final harvest =
+            max(1, (residentCount * 0.08 * soilYield + farmHarvest).floor());
         nextFood += harvest;
         nature['harvests'] = nature['harvests']! + 1;
         events.add('Осенний сбор урожая с $farmCount ферм: +$harvest еды');

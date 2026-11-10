@@ -374,8 +374,7 @@ class ResidentSimulation {
               ..returningHome = false;
           }
         }
-      } else if ((!shiftHours || !hasJob) &&
-          (r.onShift || r.travelingToWork)) {
+      } else if ((!shiftHours || !hasJob) && (r.onShift || r.travelingToWork)) {
         _startJourneyHome(r);
       }
       switch (r.activity) {
@@ -457,7 +456,14 @@ class ResidentSimulation {
           dy = r.position.y - site.position.y;
       final distance = sqrt(dx * dx + dy * dy);
       var need = 0.0, bonus = 0.0;
-      if (_has(role, ['ферма', 'склад', 'рынок', 'дерево'])) {
+      if (_has(role, [
+        'ферма',
+        'склад',
+        'рынок',
+        'дерево',
+        'рыболовство',
+        'животноводство'
+      ])) {
         need += r.needs.hunger * 1.4;
       }
       if (_has(role, ['вода', 'источник', 'колодец'])) {
@@ -488,11 +494,28 @@ class ResidentSimulation {
     final job = resident.job?.toLowerCase() ?? '';
     final preferred = switch (job) {
       'фермер' => const ['ферма', 'склад'],
-      'строитель' || 'инженер' => const ['производство', 'мастерская', 'дорога', 'совет'],
+      'рыбак' => const ['рыболовство'],
+      'скотник' => const ['животноводство'],
+      'строитель' || 'инженер' => const [
+          'производство',
+          'мастерская',
+          'дорога',
+          'совет'
+        ],
       'торговец' || 'курьер' => const ['рынок', 'торговля'],
       'врач' || 'спасатель' => const ['больница', 'медпункт', 'клиника'],
-      'учитель' || 'учёный' || 'ученый' => const ['школа', 'университет', 'колледж', 'совет'],
-      'ремесленник' || 'специалист' || 'наставник' => const ['мастерская', 'рынок', 'совет', 'ферма'],
+      'учитель' || 'учёный' || 'ученый' => const [
+          'школа',
+          'университет',
+          'колледж',
+          'совет'
+        ],
+      'ремесленник' || 'специалист' || 'наставник' => const [
+          'мастерская',
+          'рынок',
+          'совет',
+          'ферма'
+        ],
       _ => const <String>[],
     };
     if (preferred.isEmpty) return null;
@@ -709,7 +732,14 @@ class ResidentSimulation {
 
   static void _satisfy(ResidentNeeds n, String role) {
     final value = role.toLowerCase();
-    if (_has(value, ['ферма', 'склад', 'рынок', 'дерево'])) {
+    if (_has(value, [
+      'ферма',
+      'склад',
+      'рынок',
+      'дерево',
+      'рыболовство',
+      'животноводство'
+    ])) {
       n.hunger = max(0, n.hunger - .55);
     }
     if (_has(value, ['вода', 'источник', 'колодец'])) {
