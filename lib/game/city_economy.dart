@@ -141,6 +141,14 @@ class MarketState {
         resident.job = resident.age < 18 ? 'Малыш' : 'Ученик';
       } else if (resident.age >= 620) {
         resident.job = 'Старейшина';
+      } else if (resident.education >= 82) {
+        resident.job = resident.personality == 'builder' ? 'Инженер' : 'Учёный';
+      } else if (resident.education >= 58) {
+        resident.job = resident.personality == 'normal'
+            ? 'Учитель'
+            : resident.personality == 'explorer'
+                ? 'Врач'
+                : 'Специалист';
       } else {
         resident.job = switch (resident.personality) {
           'builder' => 'Строитель',
@@ -180,3 +188,4 @@ class EconomyMetrics {
   final double taxRate;
   final double tradeVolume;
 }
+

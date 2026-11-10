@@ -44,20 +44,23 @@ class ResidentAgent {
     required this.needs,
     required this.morale,
     required this.wallet,
+    this.name = 'Житель',
     this.generation = 0,
     this.familyId,
   });
 
   final int id;
+  final String name;
   IsometricPoint position;
   final String gender;
   double age;
   final String personality;
   final ResidentNeeds needs;
   double morale;
-  final int wallet;
+  double wallet;
   final int generation;
   int? familyId;
+  int? factionId;
   int? spouseId;
   double birthTimer = 0;
   double workTimer = 0;
@@ -67,6 +70,14 @@ class ResidentAgent {
   double walkPhase = 0;
   double happiness = 0.6;
   double health = 1;
+  double immunity = .15;
+  String? illness;
+  bool sick = false;
+  bool criminal = false;
+  double jailed = 0;
+  int? homeId;
+  double propertyValue = 0;
+  bool isChief = false;
   double education = 0;
   double skill = 0;
   String? job;
@@ -79,6 +90,7 @@ class ResidentAgent {
 
   Map<String, dynamic> toJson() => {
         'id': id,
+        'name': name,
         'x': position.x,
         'y': position.y,
         'gender': gender,
@@ -89,10 +101,19 @@ class ResidentAgent {
         'wallet': wallet,
         'generation': generation,
         'familyId': familyId,
+        'factionId': factionId,
         'spouseId': spouseId,
         'birthTimer': birthTimer,
         'happiness': happiness,
         'health': health,
+        'immunity': immunity,
+        'illness': illness,
+        'sick': sick,
+        'criminal': criminal,
+        'jailed': jailed,
+        'homeId': homeId,
+        'propertyValue': propertyValue,
+        'isChief': isChief,
         'education': education,
         'skill': skill,
         'job': job,
@@ -109,20 +130,30 @@ class ResidentAgent {
         : '${personalityData ?? 'normal'}';
     final agent = ResidentAgent(
       id: _integer(data['id'], 0),
+      name: data['name'] is String ? data['name'] as String : 'Житель',
       position: IsometricPoint(_number(data['x'], 0), _number(data['y'], 0)),
       gender: data['gender'] == 'Ж' ? 'Ж' : 'М',
       age: _number(data['age'], 90),
       personality: personality,
       needs: ResidentNeeds.fromJson(data['needs']),
       morale: _number(data['morale'], .65),
-      wallet: _integer(data['wallet'], 12),
+      wallet: _number(data['wallet'], 12),
       generation: _integer(data['generation'], 0),
       familyId: _optionalInteger(data['familyId']),
     )
       ..spouseId = _optionalInteger(data['spouseId'])
+      ..factionId = _optionalInteger(data['factionId'])
       ..birthTimer = _number(data['birthTimer'], 0)
       ..happiness = _number(data['happiness'], .6)
       ..health = _number(data['health'], 1)
+      ..immunity = _number(data['immunity'], .15).clamp(0, .95).toDouble()
+      ..illness = data['illness'] is String ? data['illness'] as String : null
+      ..sick = data['sick'] == true
+      ..criminal = data['criminal'] == true
+      ..jailed = _number(data['jailed'], 0)
+      ..homeId = _optionalInteger(data['homeId'])
+      ..propertyValue = _number(data['propertyValue'], 0)
+      ..isChief = data['isChief'] == true
       ..education = _number(data['education'], 0)
       ..skill = _number(data['skill'], 0)
       ..job = data['job'] is String ? data['job'] as String : null;
@@ -168,10 +199,25 @@ class ResidentSimulation {
   }) {
     final rng = random ?? Random();
     const personalities = ['builder', 'explorer', 'mystic', 'normal'];
+    const names = [
+      'Алан',
+      'Айша',
+      'Бек',
+      'Дана',
+      'Ерлан',
+      'Жания',
+      'Илья',
+      'Мира',
+      'Нур',
+      'Олег',
+      'Рая',
+      'Саян'
+    ];
     final people = List.generate(
         count,
         (i) => ResidentAgent(
               id: i + 1,
+              name: names[i % names.length],
               position: IsometricPoint((rng.nextDouble() - .5) * width * .7,
                   (rng.nextDouble() - .5) * height * .7),
               gender: rng.nextBool() ? 'М' : 'Ж',
@@ -180,7 +226,7 @@ class ResidentSimulation {
               needs: ResidentNeeds(.2 + rng.nextDouble() * .25,
                   .2 + rng.nextDouble() * .3, .1 + rng.nextDouble() * .2),
               morale: .55 + rng.nextDouble() * .25,
-              wallet: 12 + rng.nextInt(18),
+              wallet: (12 + rng.nextInt(18)).toDouble(),
             ));
     return ResidentSimulation._(people, sites, width, height, rng);
   }
@@ -221,6 +267,9 @@ class ResidentSimulation {
       final personality = '${data['personalityId'] ?? 'normal'}';
       people.add(ResidentAgent(
         id: _integer(data['id'], index + 1),
+        name: data['name'] is String
+            ? data['name'] as String
+            : 'Житель ${index + 1}',
         position: IsometricPoint((rng.nextDouble() - .5) * width * .6,
             (rng.nextDouble() - .5) * height * .6),
         gender: data['gender'] == 'Ж' ? 'Ж' : 'М',
@@ -229,14 +278,23 @@ class ResidentSimulation {
         needs: ResidentNeeds(.2 + rng.nextDouble() * .25,
             .2 + rng.nextDouble() * .3, .1 + rng.nextDouble() * .2),
         morale: _number(data['morale'], .65),
-        wallet: _integer(data['wallet'], 12),
+        wallet: _number(data['wallet'], 12),
         generation: _integer(data['generation'], 0),
         familyId: _optionalInteger(data['familyId']),
       )
         ..spouseId = _optionalInteger(data['spouseId'])
+        ..factionId = _optionalInteger(data['factionId'])
         ..birthTimer = _number(data['birthTimer'], 0)
         ..happiness = _number(data['happiness'], .6)
         ..health = _number(data['health'], 1)
+        ..immunity = _number(data['immunity'], .15).clamp(0, .95).toDouble()
+        ..illness = data['illness'] is String ? data['illness'] as String : null
+        ..sick = data['sick'] == true
+        ..criminal = data['criminal'] == true
+        ..jailed = _number(data['jailed'], 0)
+        ..homeId = _optionalInteger(data['homeId'])
+        ..propertyValue = _number(data['propertyValue'], 0)
+        ..isChief = data['isChief'] == true
         ..education = _number(data['education'], 0)
         ..skill = _number(data['skill'], 0)
         ..job = data['job'] is String ? data['job'] as String : null
@@ -494,8 +552,18 @@ class ResidentSimulation {
         ? a.personality
         : traits[_rng.nextInt(traits.length)];
     final id = _nextId++;
+    const childNames = [
+      'Алия',
+      'Арман',
+      'Баян',
+      'Дамир',
+      'Ева',
+      'Марат',
+      'Самира'
+    ];
     final child = ResidentAgent(
       id: id,
+      name: childNames[_rng.nextInt(childNames.length)],
       position: IsometricPoint(
           (a.position.x + b.position.x) / 2, (a.position.y + b.position.y) / 2),
       gender: _rng.nextBool() ? 'М' : 'Ж',
@@ -591,3 +659,4 @@ int? _optionalInteger(Object? value) =>
 List<int> _integerList(Object? value) => value is List
     ? value.whereType<num>().map((number) => number.toInt()).toList()
     : const [];
+

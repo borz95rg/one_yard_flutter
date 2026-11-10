@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flame/components.dart';
 import 'package:flame/game.dart';
@@ -7,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'game/city_economy.dart';
+import 'game/civilization_simulation.dart';
 import 'game/isometric_grid.dart';
 import 'game/nature_simulation.dart';
 import 'game/resident_simulation.dart';
@@ -114,8 +116,11 @@ class _SettlementScreenState extends State<SettlementScreen>
                     bottom: 125,
                     width: 226,
                     child: _LeftDashboard(game: game)),
-                const Positioned(
-                    right: 10, top: 125, width: 218, child: _DistrictPanel()),
+                Positioned(
+                    right: 10,
+                    top: 125,
+                    width: 218,
+                    child: _DistrictPanel(game: game)),
                 Positioned(
                     left: 10,
                     bottom: 116,
@@ -124,7 +129,7 @@ class _SettlementScreenState extends State<SettlementScreen>
                 Positioned(
                     right: 10,
                     bottom: 116,
-                    child: _TechnologyPanel(world: game.worldState)),
+                    child: _TechnologyPanel(civilization: game.civilization)),
               ] else ...[
                 Positioned(
                     left: 10,
@@ -170,6 +175,10 @@ class SettlementGame extends FlameGame {
   );
   final ValueNotifier<WorldState> worldState =
       ValueNotifier(WorldState.initial());
+  final ValueNotifier<CivilizationSimulation> civilization =
+      ValueNotifier(CivilizationSimulation());
+  final ValueNotifier<List<int>> districtShares =
+      ValueNotifier(const [40, 20, 20, 20]);
   final ValueNotifier<List<String>> events = ValueNotifier(const []);
   final ValueNotifier<bool> pauseState = ValueNotifier(false);
   final ValueNotifier<int> speedIndex = ValueNotifier(0);
@@ -191,7 +200,7 @@ class SettlementGame extends FlameGame {
     } catch (_) {
       // The scene remains playable on platforms without app-private storage.
     }
-    map = SettlementMap();
+    map = SettlementMap(artwork: await images.load('city_map_crop.jpg'));
     final previous = await _saveRepository?.load();
     if (previous != null) {
       map.restore(previous);
@@ -216,6 +225,8 @@ class SettlementGame extends FlameGame {
       residents.value = map.people.metrics;
       economy.value = map.market.metrics;
       worldState.value = map.climate;
+      civilization.value = map.civilization;
+      districtShares.value = map.districtShares;
       events.value = map.recentEvents.take(4).toList(growable: false);
     }
   }
@@ -236,6 +247,16 @@ class SettlementGame extends FlameGame {
 
   void cycleSpeed() =>
       speedIndex.value = (speedIndex.value + 1) % speeds.length;
+
+  void refreshFromMap() {
+    if (!isLoaded) return;
+    residents.value = map.people.metrics;
+    economy.value = map.market.metrics;
+    worldState.value = map.climate;
+    civilization.value = map.civilization;
+    districtShares.value = map.districtShares;
+    events.value = map.recentEvents.take(4).toList(growable: false);
+  }
 
   Future<void> save() async {
     final repository = _saveRepository;
@@ -280,6 +301,8 @@ class SettlementGame extends FlameGame {
     residents.dispose();
     economy.dispose();
     worldState.dispose();
+    civilization.dispose();
+    districtShares.dispose();
     events.dispose();
     pauseState.dispose();
     speedIndex.dispose();
@@ -288,11 +311,15 @@ class SettlementGame extends FlameGame {
 }
 
 class _Building {
-  const _Building(this.column, this.row, this.kind);
+  const _Building(this.column, this.row, this.kind, {this.visible = false});
   final int column, row, kind;
+  final bool visible;
 }
 
 class SettlementMap extends Component {
+  SettlementMap({this.artwork});
+
+  final ui.Image? artwork;
   static const columns = 28, rows = 24;
   static const tileW = 68.0, tileH = 36.0;
   final List<_Building> _buildings = [
@@ -314,8 +341,10 @@ class SettlementMap extends Component {
   );
   MarketState market = MarketState();
   final NatureSimulation nature = NatureSimulation();
+  CivilizationSimulation civilization = CivilizationSimulation();
   WorldState climate = WorldState.initial();
   double _timeOfDay = .35;
+  double _housingGrowthTimer = 0;
   final List<String> recentEvents = [];
   Map<String, dynamic>? legacyHtmlSave;
 
@@ -326,17 +355,30 @@ class SettlementMap extends Component {
         ResidentSite(cellCenter(5, 18), 'парк отдыха'),
       ];
 
+  List<int> get districtShares {
+    const kinds = [0, 2, 1, 4];
+    final recognized = _buildings.where((b) => kinds.contains(b.kind)).length;
+    if (recognized == 0) return const [0, 0, 0, 0];
+    return [
+      for (final kind in kinds)
+        (_buildings.where((b) => b.kind == kind).length * 100 / recognized)
+            .round(),
+    ];
+  }
+
   Map<String, dynamic> toJson() => {
         'buildings': [
           for (final building in _buildings)
             {
               'column': building.column,
               'row': building.row,
-              'kind': building.kind
+              'kind': building.kind,
+              'visible': building.visible,
             },
         ],
         'residents': people.toJson(),
         'market': market.toJson(),
+        'civilization': civilization.toJson(),
         'worldState': climate.toJson(),
         'timeOfDay': _timeOfDay,
       };
@@ -359,7 +401,9 @@ class SettlementMap extends Component {
             row < rows &&
             kind >= 0 &&
             kind < 8) {
-          restored.add(_Building(col, row, kind));
+          restored.add(_Building(col, row, kind,
+              visible:
+                  item['visible'] is bool ? item['visible'] as bool : true));
         }
       }
       if (restored.isNotEmpty) {
@@ -385,6 +429,13 @@ class SettlementMap extends Component {
         marketData['taxRate'] ??= legacy['cityTaxRate'];
       }
       market = MarketState.fromJson(marketData);
+    }
+    final civilizationData = payload['civilization'];
+    if (civilizationData is Map) {
+      civilization = CivilizationSimulation.fromJson(
+          Map<String, dynamic>.from(civilizationData));
+    } else if (legacy != null) {
+      civilization = CivilizationSimulation.fromLegacy(legacy);
     }
     final residentsData = payload['residents'];
     if (residentsData is List) {
@@ -484,7 +535,7 @@ class SettlementMap extends Component {
       return false;
     }
     market.materials -= cost;
-    _buildings.add(_Building(cell.column, cell.row, kind));
+    _buildings.add(_Building(cell.column, cell.row, kind, visible: true));
     people.sites.add(
         ResidentSite(cellCenter(cell.column, cell.row), _roleForKind(kind)));
     recentEvents.insert(
@@ -517,9 +568,32 @@ class SettlementMap extends Component {
   @override
   void update(double dt) {
     _timeOfDay = (_timeOfDay + dt / 180) % 1;
+    _housingGrowthTimer += dt;
     final hour = (_timeOfDay * 24).floor();
     people.update(dt, isNight: hour < 6 || hour >= 20);
-    market.update(dt: dt, residents: people.residents, sites: people.sites);
+    market.update(
+      dt: dt,
+      residents: people.residents,
+      sites: people.sites,
+      technologyLevel: civilization.technologyLevel,
+      eraIndex: civilization.eraIndex,
+    );
+    final cityEvents = civilization.update(
+      dt: dt,
+      residents: people.residents,
+      sites: people.sites,
+      market: market,
+    );
+    if (cityEvents.isNotEmpty) {
+      recentEvents.insertAll(0, cityEvents);
+      if (recentEvents.length > 8) {
+        recentEvents.removeRange(8, recentEvents.length);
+      }
+    }
+    if (_housingGrowthTimer >= 10) {
+      _housingGrowthTimer %= 10;
+      _growHousing();
+    }
     final result = nature.update(
       state: climate,
       dt: dt,
@@ -543,22 +617,70 @@ class SettlementMap extends Component {
     }
   }
 
+  void _growHousing() {
+    final homes = _buildings.where((building) => building.kind == 0).length;
+    if (people.residents.length <= homes * 4 ||
+        market.treasury < 25 ||
+        market.materials < 10) {
+      return;
+    }
+    for (var row = 4; row < rows - 3; row++) {
+      for (var column = 3; column < columns - 3; column++) {
+        if (_buildings.any((b) => b.column == column && b.row == row)) continue;
+        market.treasury -= 25;
+        market.materials -= 10;
+        _buildings.add(_Building(column, row, 0, visible: true));
+        people.sites.add(ResidentSite(cellCenter(column, row), 'дом'));
+        recentEvents.insert(0, '🏘️ Город автоматически расширил жилой район');
+        return;
+      }
+    }
+  }
+
   @override
   void render(Canvas canvas) {
     final origin = cellCenter(columns ~/ 2, rows ~/ 2);
     canvas.save();
     canvas.translate(-origin.x, -origin.y);
-    _drawTerrain(canvas);
-    _drawRoads(canvas);
-    _drawRiver(canvas);
-    _drawTrees(canvas);
+    if (artwork != null) {
+      canvas.drawImageRect(
+        artwork!,
+        Rect.fromLTWH(
+            0, 0, artwork!.width.toDouble(), artwork!.height.toDouble()),
+        const Rect.fromLTWH(-884, -468, 1768, 936),
+        Paint()..filterQuality = FilterQuality.high,
+      );
+      _drawFactionTerritories(canvas);
+    } else {
+      _drawTerrain(canvas);
+      _drawFactionTerritories(canvas);
+      _drawRoads(canvas);
+      _drawRiver(canvas);
+      _drawTrees(canvas);
+    }
     final sorted = [..._buildings]
       ..sort((a, b) => (a.column + a.row).compareTo(b.column + b.row));
     for (final building in sorted) {
-      _drawBuilding(canvas, building);
+      if (building.visible) _drawBuilding(canvas, building);
     }
     _drawPeople(canvas);
     canvas.restore();
+  }
+
+  void _drawFactionTerritories(Canvas canvas) {
+    for (final faction in civilization.factions) {
+      final center = Offset(faction.x, faction.y);
+      final radius = 36 + faction.territory.clamp(0, 160) * .8;
+      canvas.drawCircle(
+          center, radius, Paint()..color = Color(faction.color).withAlpha(20));
+      canvas.drawCircle(
+          center,
+          radius,
+          Paint()
+            ..color = Color(faction.color).withAlpha(130)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2);
+    }
   }
 
   void _drawTerrain(Canvas canvas) {
@@ -790,16 +912,34 @@ class _TopBar extends StatelessWidget {
                 builder: (context, r, _) => _Resource(
                     icon: Icons.people_alt, value: '${r.population}')),
             if (!compact) ...[
-              ValueListenableBuilder<WorldState>(
-                  valueListenable: game.worldState,
-                  builder: (context, world, _) => Text(
-                      'Год ${world.worldYear} · ${NatureSimulation.seasonNames[world.seasonIndex]}',
+              ValueListenableBuilder<CivilizationSimulation>(
+                  valueListenable: game.civilization,
+                  builder: (context, civilization, _) => Text(
+                      'Год ${civilization.year} · ${civilization.currentEra}',
                       style: const TextStyle(
                           fontSize: 11, fontWeight: FontWeight.bold))),
               const SizedBox(width: 10),
-              const Icon(Icons.wb_sunny, color: Color(0xffffd05c), size: 18),
-              const SizedBox(width: 3),
-              const Text('+16°'),
+              ValueListenableBuilder<WorldState>(
+                  valueListenable: game.worldState,
+                  builder: (context, world, _) => Row(children: [
+                        Icon(
+                            world.weather.toLowerCase().contains('дожд')
+                                ? Icons.cloud
+                                : world.weather.toLowerCase().contains('снег')
+                                    ? Icons.ac_unit
+                                    : Icons.wb_sunny,
+                            color: const Color(0xffffd05c),
+                            size: 18),
+                        const SizedBox(width: 3),
+                        Text(
+                            '${[
+                              12,
+                              24,
+                              9,
+                              -4
+                            ][world.seasonIndex]}° · ${world.weather}',
+                            style: const TextStyle(fontSize: 10)),
+                      ])),
               const SizedBox(width: 5),
               _TimeControls(game: game),
             ],
@@ -813,16 +953,35 @@ class _TopBar extends StatelessWidget {
           ]),
           if (!compact) ...[
             const SizedBox(height: 7),
-            const Row(children: [
-              _NavButton(Icons.home_work, 'Строительство', active: true),
-              _NavButton(Icons.settings_suggest, 'Управление'),
-              _NavButton(Icons.query_stats, 'Экономика'),
-              _NavButton(Icons.groups, 'Население'),
-              _NavButton(Icons.school, 'Образование'),
-              _NavButton(Icons.health_and_safety, 'Здоровье'),
-              _NavButton(Icons.shield, 'Безопасность'),
-              _NavButton(Icons.theater_comedy, 'Культура'),
-              _NavButton(Icons.emoji_events, 'Достижения'),
+            Row(children: [
+              _NavButton(Icons.home_work, 'Строительство',
+                  active: true,
+                  onPressed: () =>
+                      _showCivilizationPanel(context, game, 'Строительство')),
+              _NavButton(Icons.settings_suggest, 'Управление',
+                  onPressed: () =>
+                      _showCivilizationPanel(context, game, 'Управление')),
+              _NavButton(Icons.query_stats, 'Экономика',
+                  onPressed: () =>
+                      _showCivilizationPanel(context, game, 'Экономика')),
+              _NavButton(Icons.groups, 'Население',
+                  onPressed: () =>
+                      _showCivilizationPanel(context, game, 'Население')),
+              _NavButton(Icons.school, 'Образование',
+                  onPressed: () =>
+                      _showCivilizationPanel(context, game, 'Образование')),
+              _NavButton(Icons.health_and_safety, 'Здоровье',
+                  onPressed: () =>
+                      _showCivilizationPanel(context, game, 'Здоровье')),
+              _NavButton(Icons.shield, 'Безопасность',
+                  onPressed: () =>
+                      _showCivilizationPanel(context, game, 'Безопасность')),
+              _NavButton(Icons.theater_comedy, 'Культура',
+                  onPressed: () =>
+                      _showCivilizationPanel(context, game, 'Культура')),
+              _NavButton(Icons.emoji_events, 'Достижения',
+                  onPressed: () =>
+                      _showCivilizationPanel(context, game, 'Достижения')),
             ]),
           ],
         ]),
@@ -845,10 +1004,12 @@ class _Resource extends StatelessWidget {
 }
 
 class _NavButton extends StatelessWidget {
-  const _NavButton(this.icon, this.label, {this.active = false});
+  const _NavButton(this.icon, this.label,
+      {this.active = false, this.onPressed});
   final IconData icon;
   final String label;
   final bool active;
+  final VoidCallback? onPressed;
   @override
   Widget build(BuildContext context) => Expanded(
       child: Container(
@@ -859,18 +1020,265 @@ class _NavButton extends StatelessWidget {
               borderRadius: BorderRadius.circular(8),
               border: Border.all(
                   color: active ? const Color(0xff67d5e4) : Colors.white12)),
-          child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-            Icon(icon,
-                size: 16,
-                color: active ? const Color(0xffffd05c) : Colors.white),
-            const SizedBox(width: 4),
-            Flexible(
-                child: Text(label,
-                    overflow: TextOverflow.ellipsis,
-                    maxLines: 1,
-                    style: const TextStyle(
-                        fontSize: 9, fontWeight: FontWeight.w700)))
-          ])));
+          child: InkWell(
+              onTap: onPressed,
+              borderRadius: BorderRadius.circular(8),
+              child:
+                  Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                Icon(icon,
+                    size: 16,
+                    color: active ? const Color(0xffffd05c) : Colors.white),
+                const SizedBox(width: 4),
+                Flexible(
+                    child: Text(label,
+                        overflow: TextOverflow.ellipsis,
+                        maxLines: 1,
+                        style: const TextStyle(
+                            fontSize: 9, fontWeight: FontWeight.w700)))
+              ]))));
+}
+
+void _showCivilizationPanel(
+    BuildContext context, SettlementGame game, String title) {
+  showDialog<void>(
+    context: context,
+    builder: (context) => _CivilizationPanel(game: game, title: title),
+  );
+}
+
+class _CivilizationPanel extends StatefulWidget {
+  const _CivilizationPanel({required this.game, required this.title});
+  final SettlementGame game;
+  final String title;
+
+  @override
+  State<_CivilizationPanel> createState() => _CivilizationPanelState();
+}
+
+class _CivilizationPanelState extends State<_CivilizationPanel> {
+  String? message;
+
+  void _act(String Function() action) {
+    final result = action();
+    setState(() => message = result);
+    widget.game.map.recentEvents.insert(0, result);
+    widget.game.refreshFromMap();
+  }
+
+  Widget _line(String label, String value) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: Row(children: [
+          Expanded(child: Text(label)),
+          Text(value, style: const TextStyle(fontWeight: FontWeight.bold))
+        ]),
+      );
+
+  Widget _action(String label, VoidCallback onPressed) => Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: SizedBox(
+          width: double.infinity,
+          child: OutlinedButton(onPressed: onPressed, child: Text(label)),
+        ),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.game.isLoaded) {
+      return AlertDialog(
+          title: Text(widget.title), content: const LinearProgressIndicator());
+    }
+    final map = widget.game.map;
+    final civ = map.civilization;
+    final people = map.people.residents;
+    final economy = map.market;
+    final averageHealth = people.isEmpty
+        ? 100
+        : (people.fold<double>(0, (sum, r) => sum + r.health) /
+                people.length *
+                100)
+            .round();
+    final jobs = <String, int>{};
+    for (final person in people) {
+      final job = person.job ?? 'Распределяется';
+      jobs[job] = (jobs[job] ?? 0) + 1;
+    }
+    final body = switch (widget.title) {
+      'Строительство' => <Widget>[
+          _line('Построено зданий', '${map._buildings.length}'),
+          _line('Стройматериалы', economy.materials.toStringAsFixed(1)),
+          const SizedBox(height: 8),
+          const Text(
+              'Выберите инструмент в нижней панели и нажмите на свободную клетку карты.'),
+          for (var i = 0; i < _BuildBar.items.length; i++)
+            _line(_BuildBar.items[i].$2,
+                '×${map._buildings.where((b) => b.kind == i).length}'),
+        ],
+      'Управление' => <Widget>[
+          _line('Государство', civ.nationName),
+          _line('Год государства', '${civ.year}'),
+          _line(
+              'Правитель',
+              people.where((r) => r.id == civ.rulerId).firstOrNull?.name ??
+                  'Совет'),
+          _line('Поддержка жителей', '${(civ.cityApproval * 100).round()}%'),
+          _line('Казна', economy.treasury.toStringAsFixed(0)),
+          _line('Армия · земли · слава',
+              '${civ.army} · ${civ.territory} · ${civ.prestige.floor()}'),
+          _line('Общины · жители в общинах',
+              '${civ.factions.length} · ${civ.affiliatedResidents}'),
+          _line('Семейные домохозяйства', '${civ.households.length}'),
+          _action('Нанять до 5 бойцов · 8 монет за бойца',
+              () => _act(() => civ.recruitArmy(economy))),
+          _action('Отправить дипломатическую миссию · 12 монет',
+              () => _act(() => civ.conductDiplomacy(economy))),
+          _action('Начать военный поход · 20 монет',
+              () => _act(() => civ.launchCampaign(economy, null))),
+          _line('Походы · победы · поражения',
+              '${civ.campaigns} · ${civ.victories} · ${civ.defeats}'),
+          for (final relation in civ.diplomacy.entries)
+            _line(relation.key,
+                '${relation.value.round()}%${relation.value >= 80 ? ' · союз' : ''}'),
+        ],
+      'Экономика' => <Widget>[
+          _line('Казна', economy.treasury.toStringAsFixed(0)),
+          _line('Доходы торговли', economy.tradeVolume.floor().toString()),
+          _line('Еда · материалы · товары',
+              '${economy.food.floor()} · ${economy.materials.floor()} · ${economy.goods.floor()}'),
+          const SizedBox(height: 10),
+          Text('Налог: ${(economy.taxRate * 100).round()}%'),
+          Slider(
+            value: economy.taxRate.clamp(0, .5),
+            min: 0,
+            max: .5,
+            divisions: 10,
+            label: '${(economy.taxRate * 100).round()}%',
+            onChanged: (value) {
+              civ.setTaxRate(economy, value);
+              widget.game.refreshFromMap();
+              setState(() {});
+            },
+          ),
+          _line('Мировая торговля', '${civ.worldTradeVolume.floor()}'),
+          _line('Открытые поселения', '${civ.foundedSettlements}'),
+          _line('Переселения', '${civ.migrations}'),
+        ],
+      'Население' => <Widget>[
+          _line('Жителей', '${people.length}'),
+          _line('Дети · взрослые · старейшины',
+              '${people.where((r) => r.age < 42).length} · ${people.where((r) => r.age >= 42 && r.age < 620).length} · ${people.where((r) => r.age >= 620).length}'),
+          _line('Семейные пары',
+              '${people.where((r) => r.spouseId != null && r.gender == 'М').length}'),
+          _line('Домохозяйства · жилые уровни',
+              '${civ.households.length} · ${civ.households.where((h) => h.level > 1).length} многоэтажных'),
+          _line('Фракции · участники',
+              '${civ.factions.length} · ${civ.affiliatedResidents}'),
+          _line('Образованные',
+              '${people.where((r) => r.education >= 58).length}'),
+          for (final entry in jobs.entries) _line(entry.key, '${entry.value}'),
+          const Divider(),
+          for (final person in people.take(12))
+            _line('${person.name} · ${person.age.floor()} лет',
+                '${person.job ?? 'без профессии'} · ${person.wallet.floor()} мон. · дом ${person.homeId ?? '—'}'),
+        ],
+      'Образование' => <Widget>[
+          _line('Школы', '${civ.civicBuildings.contains('Школа') ? 1 : 0}'),
+          _line(
+              'Колледжи', '${civ.civicBuildings.contains('Колледж') ? 1 : 0}'),
+          _line('Университеты',
+              '${civ.civicBuildings.contains('Университет') ? 1 : 0}'),
+          _line('Ученики', '${people.where((r) => r.age < 42).length}'),
+          _line('Образованные жители',
+              '${people.where((r) => r.education >= 58).length}'),
+          _line('Научные очки',
+              '${civ.researchPoints.floor()} / ${civ.technologyLevel >= 6 ? 'максимум' : civ.nextResearchTarget.floor()}'),
+          _line('Технологии', '${civ.technologyLevel} / 6'),
+          _line('Эпоха', civ.currentEra),
+          LinearProgressIndicator(value: civ.researchProgress),
+        ],
+      'Здоровье' => <Widget>[
+          _line('Среднее здоровье', '$averageHealth%'),
+          _line('Заболевшие', '${civ.sickCount}'),
+          _line('Вспышки · выздоровления · лечение',
+              '${civ.outbreaks} · ${civ.recovered} · ${civ.treated}'),
+          _line('Больницы и медпункты',
+              '${civ.civicBuildings.where((b) => b == 'Больница' || b == 'Медпункт').length}'),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Профилактика эпидемий'),
+            value: civ.preventionEnabled,
+            onChanged: (value) => setState(() {
+              civ.preventionEnabled = value;
+              widget.game.refreshFromMap();
+            }),
+          ),
+        ],
+      'Безопасность' => <Widget>[
+          _line('Преступления', '${civ.crimes}'),
+          _line('Раскрыто', '${civ.crimesResolved}'),
+          _line('Пожары', '${civ.fireIncidents}'),
+          _line('Предотвращено возгораний', '${civ.firesPrevented}'),
+          _line('Полиция',
+              civ.civicBuildings.contains('Полицейский участок') ? 'участок открыт' : 'нет участка'),
+          _line('Пожарная часть',
+              civ.civicBuildings.contains('Пожарная часть') ? 'служба работает' : 'нет службы'),
+        ],
+      'Культура' => <Widget>[
+          _line('Культурный уровень', '${civ.cultureLevel} / 10'),
+          _line('Культурные очки', '${civ.culturePoints.floor()}'),
+          _line('Традиция', civ.tradition),
+          _line('Единство', civ.dominantCulture),
+          _line('Памятники · праздники', '${civ.monuments} · ${civ.festivals}'),
+          _line('Наследие', civ.heritage.floor().toString()),
+          _action(
+              civ.festivalCooldown > 0
+                  ? 'Праздник через ${civ.festivalCooldown.ceil()} с'
+                  : 'Провести городской праздник',
+              () => _act(() =>
+                  civ.holdFestival(economy, people) ?? 'Праздник проведён')),
+        ],
+      _ => <Widget>[
+          _line('Население', '${people.length} / 100 жителей'),
+          _line('Уровень технологий', '${civ.technologyLevel} / 6'),
+          _line('Эпоха', civ.currentEra),
+          _line('Городские учреждения', '${civ.civicBuildings.length}'),
+          _line('Союзы', '${civ.alliances}'),
+          for (final milestone in [10, 20, 30, 50, 75, 100])
+            _line(
+                'Население $milestone',
+                people.length >= milestone
+                    ? 'достигнуто'
+                    : '${people.length} / $milestone'),
+          _line('Военные победы', '${civ.victories}'),
+          _line('Городские праздники', '${civ.festivals}'),
+        ],
+    };
+
+    return AlertDialog(
+      title: Text(widget.title),
+      content: SizedBox(
+        width: 380,
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ...body,
+              if (message != null) ...[
+                const SizedBox(height: 10),
+                Text(message!,
+                    style: const TextStyle(color: Color(0xffffd05c))),
+              ],
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Закрыть'))
+      ],
+    );
+  }
 }
 
 class _LeftDashboard extends StatelessWidget {
@@ -920,48 +1328,55 @@ class _LeftDashboard extends StatelessWidget {
 }
 
 class _DistrictPanel extends StatelessWidget {
-  const _DistrictPanel();
+  const _DistrictPanel({required this.game});
+  final SettlementGame game;
   @override
-  Widget build(BuildContext context) => _GlassPanel(
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Row(children: [
-          Icon(Icons.map, color: Color(0xffffcb56), size: 18),
-          SizedBox(width: 6),
-          Text('РАЙОНЫ ГОРОДА',
-              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800))
-        ]),
-        const SizedBox(height: 9),
-        for (final item in const [
-          (Color(0xff2196f3), 'Жилой район', '35%'),
-          (Color(0xffffc107), 'Торговый район', '22%'),
-          (Color(0xffff8f00), 'Производство', '20%'),
-          (Color(0xff4caf50), 'Зелёный район', '23%')
-        ])
-          Padding(
-              padding: const EdgeInsets.only(bottom: 7),
-              child: Row(children: [
+  Widget build(BuildContext context) => ValueListenableBuilder<List<int>>(
+      valueListenable: game.districtShares,
+      builder: (context, shares, _) => _GlassPanel(
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                const Row(children: [
+                  Icon(Icons.map, color: Color(0xffffcb56), size: 18),
+                  SizedBox(width: 6),
+                  Text('РАЙОНЫ ГОРОДА',
+                      style:
+                          TextStyle(fontSize: 11, fontWeight: FontWeight.w800))
+                ]),
+                const SizedBox(height: 9),
+                for (final item in [
+                  (Color(0xff2196f3), 'Жилой район', '${shares[0]}%'),
+                  (Color(0xffffc107), 'Торговый район', '${shares[1]}%'),
+                  (Color(0xffff8f00), 'Производство', '${shares[2]}%'),
+                  (Color(0xff4caf50), 'Зелёный район', '${shares[3]}%')
+                ])
+                  Padding(
+                      padding: const EdgeInsets.only(bottom: 7),
+                      child: Row(children: [
+                        Container(
+                            width: 10,
+                            height: 10,
+                            decoration: BoxDecoration(
+                                color: item.$1,
+                                borderRadius: BorderRadius.circular(3))),
+                        const SizedBox(width: 6),
+                        Expanded(
+                            child: Text(item.$2,
+                                style: const TextStyle(fontSize: 10))),
+                        Text(item.$3,
+                            style: const TextStyle(
+                                fontSize: 10, fontWeight: FontWeight.bold))
+                      ])),
                 Container(
-                    width: 10,
-                    height: 10,
+                    height: 98,
                     decoration: BoxDecoration(
-                        color: item.$1,
-                        borderRadius: BorderRadius.circular(3))),
-                const SizedBox(width: 6),
-                Expanded(
-                    child: Text(item.$2, style: const TextStyle(fontSize: 10))),
-                Text(item.$3,
-                    style: const TextStyle(
-                        fontSize: 10, fontWeight: FontWeight.bold))
-              ])),
-        Container(
-            height: 98,
-            decoration: BoxDecoration(
-                color: const Color(0xff264d40),
-                borderRadius: BorderRadius.circular(9)),
-            child: CustomPaint(
-                painter: _MiniMapPainter(), child: const SizedBox.expand())),
-      ]));
+                        color: const Color(0xff264d40),
+                        borderRadius: BorderRadius.circular(9)),
+                    child: CustomPaint(
+                        painter: _MiniMapPainter(),
+                        child: const SizedBox.expand())),
+              ])));
 }
 
 class _MiniMapPainter extends CustomPainter {
@@ -1068,13 +1483,13 @@ class _TimeControls extends StatelessWidget {
 }
 
 class _TechnologyPanel extends StatelessWidget {
-  const _TechnologyPanel({required this.world});
-  final ValueListenable<WorldState> world;
+  const _TechnologyPanel({required this.civilization});
+  final ValueListenable<CivilizationSimulation> civilization;
   @override
   Widget build(BuildContext context) => SizedBox(
       width: 218,
-      child: ValueListenableBuilder<WorldState>(
-          valueListenable: world,
+      child: ValueListenableBuilder<CivilizationSimulation>(
+          valueListenable: civilization,
           builder: (context, state, _) => _GlassPanel(
                   child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1087,17 +1502,21 @@ class _TechnologyPanel extends StatelessWidget {
                               fontSize: 10, fontWeight: FontWeight.w800))
                     ]),
                     const SizedBox(height: 8),
-                    Text('Эпоха: ${state.currentEraIndex + 1} / 6',
+                    Text(
+                        'Уровень: ${state.technologyLevel} из 6 · ${state.currentEra}',
                         style: const TextStyle(fontSize: 10)),
                     const SizedBox(height: 6),
-                    const LinearProgressIndicator(
-                        value: .12,
+                    LinearProgressIndicator(
+                        value: state.researchProgress,
                         minHeight: 6,
                         color: Color(0xff4ade80),
                         backgroundColor: Colors.white24),
                     const SizedBox(height: 7),
-                    const Text('Научная система в разработке',
-                        style: TextStyle(fontSize: 10)),
+                    Text(
+                        state.technologyLevel >= 6
+                            ? 'Максимальный уровень технологий'
+                            : 'Наука: ${state.researchPoints.floor()} / ${state.nextResearchTarget.floor()}',
+                        style: const TextStyle(fontSize: 10)),
                   ]))));
 }
 
@@ -1236,3 +1655,4 @@ class _GlassPanel extends StatelessWidget {
           ]),
       child: child);
 }
+
