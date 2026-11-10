@@ -316,6 +316,12 @@ class _Building {
   final bool visible;
 }
 
+class _BusRoute {
+  const _BusRoute({required this.points, required this.stopProgress});
+  final List<Offset> points;
+  final Map<int, double> stopProgress;
+}
+
 class SettlementMap extends Component {
   SettlementMap({this.artwork});
 
@@ -343,6 +349,8 @@ class SettlementMap extends Component {
   final NatureSimulation nature = NatureSimulation();
   CivilizationSimulation civilization = CivilizationSimulation();
   WorldState climate = WorldState.initial();
+  _BusRoute? _cachedBusRoute;
+  bool _busRouteDirty = true;
   double _timeOfDay = .35;
   double _housingGrowthTimer = 0;
   final List<String> recentEvents = [];
@@ -350,7 +358,8 @@ class SettlementMap extends Component {
 
   List<ResidentSite> _defaultSites() => [
         for (final b in _buildings)
-          ResidentSite(cellCenter(b.column, b.row), _roleForKind(b.kind)),
+          ResidentSite(cellCenter(b.column, b.row), _roleForKind(b.kind),
+              mapId: b.row * columns + b.column),
         ResidentSite(cellCenter(23, 12), 'источник воды'),
         ResidentSite(cellCenter(5, 18), 'парк отдыха'),
       ];
@@ -383,6 +392,17 @@ class SettlementMap extends Component {
         'timeOfDay': _timeOfDay,
       };
 
+  _BusRoute? get _busRoute {
+    if (_busRouteDirty) {
+      _cachedBusRoute = _createBusRoute();
+      _busRouteDirty = false;
+    }
+    return _cachedBusRoute;
+  }
+
+  double get _busProgress =>
+      (((_timeOfDay * 24 * 2.4) % 18) / 18).clamp(0, 1).toDouble();
+
   void restore(GameSave save) {
     final legacy = save.legacyHtmlSave;
     legacyHtmlSave = legacy;
@@ -412,6 +432,7 @@ class SettlementMap extends Component {
           ..addAll(restored);
       }
     }
+    _busRouteDirty = true;
     final worldData = payload['worldState'];
     if (worldData is Map) {
       climate = WorldState.fromJson(Map<String, dynamic>.from(worldData));
@@ -538,8 +559,10 @@ class SettlementMap extends Component {
     }
     market.materials -= cost;
     _buildings.add(_Building(cell.column, cell.row, kind, visible: true));
-    people.sites.add(
-        ResidentSite(cellCenter(cell.column, cell.row), _roleForKind(kind)));
+    people.sites.add(ResidentSite(
+        cellCenter(cell.column, cell.row), _roleForKind(kind),
+        mapId: cell.row * columns + cell.column));
+    if (kind == 7 || kind == 11) _busRouteDirty = true;
     recentEvents.insert(
         0, 'Построено: ${_buildingName(kind)} (−${cost.toInt()} строймат.)');
     return true;
@@ -584,7 +607,19 @@ class SettlementMap extends Component {
     _timeOfDay = (_timeOfDay + dt / 180) % 1;
     _housingGrowthTimer += dt;
     final hour = (_timeOfDay * 24).floor();
-    people.update(dt, isNight: hour < 6 || hour >= 20, hour: hour);
+    final route = _busRoute;
+    people.update(
+      dt,
+      isNight: hour < 6 || hour >= 20,
+      hour: hour,
+      busProgress: _busProgress,
+      busStopProgress: route?.stopProgress ?? const {},
+      busRoutePoints: route == null
+          ? const []
+          : route.points
+              .map((point) => IsometricPoint(point.dx, point.dy))
+              .toList(),
+    );
     market.update(
       dt: dt,
       residents: people.residents,
@@ -745,7 +780,7 @@ class SettlementMap extends Component {
         .map((building) => cellCenter(building.column, building.row))
         .map((point) => Offset(point.x, point.y))
         .toList(growable: false);
-    final busRoutePoints = _busRoutePoints();
+    final busRoutePoints = _busRoute?.points ?? const <Offset>[];
     final colors = [
       const Color(0xffbd594a),
       const Color(0xff6d9db7),
@@ -755,8 +790,8 @@ class SettlementMap extends Component {
     ];
     const artWidth = 1195.0, artHeight = 600.0;
     for (var i = 0; i < count; i++) {
-      final bus = (busRoutePoints.length > 1 && i % 5 == 0) ||
-          (stage > .68 && i % 7 == 0);
+      final bus =
+          busRoutePoints.length > 1 ? i == 0 : stage > .68 && i % 7 == 0;
       final usesBusStops = bus && busRoutePoints.length > 1;
       final usesPlayerRoads = !usesBusStops && playerRoadPoints.length > 1;
       final route = usesBusStops
@@ -813,6 +848,14 @@ class SettlementMap extends Component {
       final lamp = Paint()..color = const Color(0xffffe6a3);
       canvas.drawCircle(Offset(length / 2 - 1, -1.5), .8, lamp);
       canvas.drawCircle(Offset(length / 2 - 1, 1.5), .8, lamp);
+      if (bus) {
+        final riders =
+            people.residents.where((resident) => resident.onBus).length;
+        for (var rider = 0; rider < math.min(5, riders); rider++) {
+          canvas.drawCircle(Offset(-5 + rider * 2.5, -1), 1,
+              Paint()..color = const Color(0xffffe5ae));
+        }
+      }
       canvas.restore();
     }
   }
@@ -884,11 +927,11 @@ class SettlementMap extends Component {
     return route.reversed.toList(growable: false);
   }
 
-  List<Offset> _busRoutePoints() {
+  _BusRoute? _createBusRoute() {
     final stops = _buildings.where((building) => building.kind == 11).toList()
       ..sort((a, b) =>
           (a.row * columns + a.column).compareTo(b.row * columns + b.column));
-    if (stops.length < 2) return const [];
+    if (stops.length < 2) return null;
     final roads = <int, _Building>{
       for (final road in _buildings.where((building) => building.kind == 7))
         road.row * columns + road.column: road,
@@ -939,15 +982,17 @@ class SettlementMap extends Component {
     }
 
     final roadKeys = stops.map(attachedRoadKey).toList();
-    if (roadKeys.any((key) => key == null)) return const [];
+    if (roadKeys.any((key) => key == null)) return null;
     final points = <Offset>[];
+    final stopPointIndexes = <int, int>{};
     for (var i = 0; i < stops.length; i++) {
       final from = stops[i], to = stops[(i + 1) % stops.length];
       final path = roadPath(roadKeys[i]!, roadKeys[(i + 1) % stops.length]!);
-      if (path.isEmpty) return const [];
+      if (path.isEmpty) return null;
       if (points.isEmpty) {
         final position = cellCenter(from.column, from.row);
         points.add(Offset(position.x, position.y));
+        stopPointIndexes[from.row * columns + from.column] = 0;
       }
       for (final roadKey in path) {
         final road = roads[roadKey]!;
@@ -956,8 +1001,21 @@ class SettlementMap extends Component {
       }
       final stopPosition = cellCenter(to.column, to.row);
       points.add(Offset(stopPosition.x, stopPosition.y));
+      stopPointIndexes[to.row * columns + to.column] = points.length - 1;
     }
-    return points.length > 1 ? points : const [];
+    if (points.length < 2) return null;
+    var totalLength = 0.0;
+    final lengthAtIndex = List<double>.filled(points.length, 0);
+    for (var i = 1; i < points.length; i++) {
+      totalLength += (points[i] - points[i - 1]).distance;
+      lengthAtIndex[i] = totalLength;
+    }
+    if (totalLength == 0) return null;
+    final progressByStop = <int, double>{
+      for (final entry in stopPointIndexes.entries)
+        entry.key: (lengthAtIndex[entry.value] / totalLength) % 1,
+    };
+    return _BusRoute(points: points, stopProgress: progressByStop);
   }
 
   static (Offset, Offset) _sampleRoute(List<Offset> points, double progress) {
@@ -1290,6 +1348,7 @@ class SettlementMap extends Component {
 
   void _drawPeople(Canvas canvas) {
     for (final person in people.residents) {
+      if (person.onBus) continue;
       final p = person.position;
       final bob = math.sin(person.walkPhase) * 1.5;
       final color = switch (person.personality) {
@@ -1557,6 +1616,8 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
       'Строительство' => <Widget>[
           _line('Построено зданий', '${map._buildings.length}'),
           _line('Стройматериалы', economy.materials.toStringAsFixed(1)),
+          _line('Пассажиры: ожидают · едут',
+              '${people.where((r) => r.activity == ResidentActivity.waitingAtBusStop).length} · ${people.where((r) => r.onBus).length}'),
           const SizedBox(height: 8),
           const Text(
               'Выберите инструмент в нижней панели и нажмите на свободную клетку карты.'),

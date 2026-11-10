@@ -2,7 +2,14 @@ import 'dart:math';
 
 import 'isometric_grid.dart';
 
-enum ResidentActivity { wandering, walking, working, atHome }
+enum ResidentActivity {
+  wandering,
+  walking,
+  working,
+  atHome,
+  waitingAtBusStop,
+  ridingBus
+}
 
 class ResidentNeeds {
   ResidentNeeds(this.hunger, this.thirst, this.shelter);
@@ -27,9 +34,10 @@ class ResidentNeeds {
 }
 
 class ResidentSite {
-  ResidentSite(this.position, this.role);
+  ResidentSite(this.position, this.role, {this.mapId});
   final IsometricPoint position;
   final String role;
+  final int? mapId;
   bool disabled = false;
   int users = 0;
 }
@@ -85,6 +93,10 @@ class ResidentAgent {
   ResidentActivity activity = ResidentActivity.wandering;
   ResidentSite? target;
   ResidentSite? workSite;
+  bool waitingForBus = false;
+  bool onBus = false;
+  int? busOriginStopId;
+  int? busDestinationStopId;
   bool onShift = false;
   bool travelingToWork = false;
   bool returningHome = false;
@@ -124,6 +136,14 @@ class ResidentAgent {
         'education': education,
         'skill': skill,
         'job': job,
+        'activity': activity.name,
+        'onShift': onShift,
+        'travelingToWork': travelingToWork,
+        'returningHome': returningHome,
+        'waitingForBus': waitingForBus,
+        'onBus': onBus,
+        'busOriginStopId': busOriginStopId,
+        'busDestinationStopId': busDestinationStopId,
         'friendIds': friendIds,
         'rivalIds': rivalIds,
         'parentIds': parentIds,
@@ -169,7 +189,18 @@ class ResidentAgent {
       ..isChief = data['isChief'] == true
       ..education = _number(data['education'], 0)
       ..skill = _number(data['skill'], 0)
-      ..job = data['job'] is String ? data['job'] as String : null;
+      ..job = data['job'] is String ? data['job'] as String : null
+      ..activity = ResidentActivity.values.firstWhere(
+        (value) => value.name == data['activity'],
+        orElse: () => ResidentActivity.wandering,
+      )
+      ..onShift = data['onShift'] == true
+      ..travelingToWork = data['travelingToWork'] == true
+      ..returningHome = data['returningHome'] == true
+      ..waitingForBus = data['waitingForBus'] == true
+      ..onBus = data['onBus'] == true
+      ..busOriginStopId = _optionalInteger(data['busOriginStopId'])
+      ..busDestinationStopId = _optionalInteger(data['busDestinationStopId']);
     agent.friendIds.addAll(_integerList(data['friendIds']));
     agent.rivalIds.addAll(_integerList(data['rivalIds']));
     agent.parentIds.addAll(_integerList(data['parentIds']));
@@ -262,6 +293,26 @@ class ResidentSimulation {
     if (people.isNotEmpty) {
       simulation._nextId = people.map((r) => r.id).reduce(max) + 1;
     }
+    for (final resident in people) {
+      if (resident.age >= 42 && resident.age < 620 && resident.job != null) {
+        resident.workSite = simulation._findWorkplace(resident);
+      }
+      if (resident.onBus) {
+        resident.activity = ResidentActivity.ridingBus;
+      } else if (resident.waitingForBus) {
+        resident.target = sites
+            .where((site) => site.mapId == resident.busOriginStopId)
+            .firstOrNull;
+        if (resident.target == null) {
+          resident.waitingForBus = false;
+          resident.busOriginStopId = null;
+          resident.busDestinationStopId = null;
+          resident.activity = ResidentActivity.wandering;
+        } else if (resident.activity != ResidentActivity.waitingAtBusStop) {
+          resident.activity = ResidentActivity.walking;
+        }
+      }
+    }
     return simulation;
   }
 
@@ -328,6 +379,7 @@ class ResidentSimulation {
   final double width, height;
   final Random _rng;
   double _socialTimer = 0, _familyTimer = 0;
+  double? _lastBusProgress;
   int _nextId = 9;
 
   ResidentMetrics get metrics {
@@ -349,7 +401,14 @@ class ResidentSimulation {
   List<Map<String, dynamic>> toJson() =>
       residents.map((resident) => resident.toJson()).toList(growable: false);
 
-  void update(double dt, {bool isNight = false, int hour = 12}) {
+  void update(
+    double dt, {
+    bool isNight = false,
+    int hour = 12,
+    double busProgress = 0,
+    Map<int, double> busStopProgress = const {},
+    List<IsometricPoint> busRoutePoints = const [],
+  }) {
     if (!dt.isFinite || dt < 0) throw ArgumentError.value(dt, 'dt');
     final shiftHours = hour >= 8 && hour < 18;
     for (final r in residents) {
@@ -368,14 +427,19 @@ class ResidentSimulation {
           if (workplace != null) {
             r
               ..workSite = workplace
-              ..target = workplace
-              ..activity = ResidentActivity.walking
               ..travelingToWork = true
               ..returningHome = false;
+            final home = r.homePosition ?? r.position;
+            if (!_startBusJourney(
+                r, home, workplace.position, busStopProgress)) {
+              r
+                ..target = workplace
+                ..activity = ResidentActivity.walking;
+            }
           }
         }
       } else if ((!shiftHours || !hasJob) && (r.onShift || r.travelingToWork)) {
-        _startJourneyHome(r);
+        _startJourneyHome(r, busStopProgress);
       }
       switch (r.activity) {
         case ResidentActivity.wandering:
@@ -403,7 +467,9 @@ class ResidentSimulation {
           final dy = site.position.y - r.position.y;
           final distance = sqrt(dx * dx + dy * dy);
           if (distance < 18) {
-            if (r.returningHome) {
+            if (r.waitingForBus && site.mapId == r.busOriginStopId) {
+              r.activity = ResidentActivity.waitingAtBusStop;
+            } else if (r.returningHome) {
               r
                 ..activity = ResidentActivity.atHome
                 ..target = null
@@ -437,6 +503,9 @@ class ResidentSimulation {
           }
         case ResidentActivity.atHome:
           break;
+        case ResidentActivity.waitingAtBusStop:
+        case ResidentActivity.ridingBus:
+          break;
       }
       r.walkPhase = r.activity == ResidentActivity.walking
           ? r.walkPhase + dt * 16
@@ -444,6 +513,7 @@ class ResidentSimulation {
     }
     _updateSocial(dt);
     _updateFamilies(dt);
+    _updateBusPassengers(busProgress, busStopProgress, busRoutePoints);
   }
 
   ResidentSite? _findTarget(ResidentAgent r) {
@@ -534,7 +604,49 @@ class ResidentSimulation {
     return best;
   }
 
-  void _startJourneyHome(ResidentAgent resident) {
+  bool _startBusJourney(
+    ResidentAgent resident,
+    IsometricPoint from,
+    IsometricPoint to,
+    Map<int, double> busStopProgress,
+  ) {
+    if (busStopProgress.length < 2) return false;
+    ResidentSite? nearest(IsometricPoint point) {
+      ResidentSite? best;
+      var bestDistance = 180.0;
+      for (final site in sites) {
+        if (site.mapId == null || !busStopProgress.containsKey(site.mapId)) {
+          continue;
+        }
+        final dx = site.position.x - point.x;
+        final dy = site.position.y - point.y;
+        final distance = sqrt(dx * dx + dy * dy);
+        if (distance < bestDistance) {
+          best = site;
+          bestDistance = distance;
+        }
+      }
+      return best;
+    }
+
+    final origin = nearest(from), destination = nearest(to);
+    if (origin == null ||
+        destination == null ||
+        origin.mapId == destination.mapId) {
+      return false;
+    }
+    resident
+      ..busOriginStopId = origin.mapId
+      ..busDestinationStopId = destination.mapId
+      ..waitingForBus = true
+      ..onBus = false
+      ..target = origin
+      ..activity = ResidentActivity.walking;
+    return true;
+  }
+
+  void _startJourneyHome(
+      ResidentAgent resident, Map<int, double> busStopProgress) {
     if (resident.activity == ResidentActivity.working && resident.onShift) {
       final workplace = resident.target;
       if (workplace != null) workplace.users = max(0, workplace.users - 1);
@@ -542,7 +654,11 @@ class ResidentSimulation {
     resident
       ..onShift = false
       ..travelingToWork = false
-      ..workSite = null;
+      ..workSite = null
+      ..waitingForBus = false
+      ..onBus = false
+      ..busOriginStopId = null
+      ..busDestinationStopId = null;
     final home = resident.homePosition;
     if (home == null) {
       resident
@@ -551,10 +667,108 @@ class ResidentSimulation {
         ..returningHome = false;
       return;
     }
+    final homeTarget = ResidentSite(home, 'дом');
+    resident.returningHome = true;
+    if (_startBusJourney(resident, resident.position, home, busStopProgress)) {
+      return;
+    }
     resident
-      ..target = ResidentSite(home, 'дом')
-      ..activity = ResidentActivity.walking
-      ..returningHome = true;
+      ..target = homeTarget
+      ..activity = ResidentActivity.walking;
+  }
+
+  void _updateBusPassengers(double progress, Map<int, double> stopProgress,
+      List<IsometricPoint> routePoints) {
+    final current = progress.clamp(0, 1).toDouble();
+    final previous = _lastBusProgress;
+    _lastBusProgress = current;
+    if (stopProgress.isEmpty || routePoints.length < 2) {
+      for (final resident in residents
+          .where((resident) => resident.onBus || resident.waitingForBus)) {
+        resident
+          ..onBus = false
+          ..waitingForBus = false
+          ..busOriginStopId = null
+          ..busDestinationStopId = null
+          ..activity = ResidentActivity.wandering
+          ..target = null;
+      }
+      return;
+    }
+    if (previous == null || previous == current) return;
+    bool crosses(double stop) => current > previous
+        ? stop > previous && stop <= current
+        : stop > previous || stop <= current;
+    double distanceFromPrevious(double stop) =>
+        stop >= previous ? stop - previous : stop + 1 - previous;
+    final arrivals = stopProgress.entries
+        .where((entry) => crosses(entry.value))
+        .toList()
+      ..sort((a, b) => distanceFromPrevious(a.value)
+          .compareTo(distanceFromPrevious(b.value)));
+    for (final arrival in arrivals) {
+      final stop = sites.where((site) => site.mapId == arrival.key).firstOrNull;
+      if (stop == null) continue;
+      for (final resident in residents) {
+        if (resident.waitingForBus &&
+            resident.activity == ResidentActivity.waitingAtBusStop &&
+            resident.busOriginStopId == arrival.key) {
+          resident
+            ..waitingForBus = false
+            ..onBus = true
+            ..target = null
+            ..activity = ResidentActivity.ridingBus;
+        }
+        if (resident.onBus && resident.busDestinationStopId == arrival.key) {
+          resident
+            ..onBus = false
+            ..waitingForBus = false
+            ..position = stop.position
+            ..busOriginStopId = null
+            ..busDestinationStopId = null;
+          if (resident.travelingToWork) {
+            resident.target = resident.workSite ?? _findWorkplace(resident);
+            resident.activity = resident.target == null
+                ? ResidentActivity.wandering
+                : ResidentActivity.walking;
+          } else if (resident.returningHome && resident.homePosition != null) {
+            resident
+              ..target = ResidentSite(resident.homePosition!, 'дом')
+              ..activity = ResidentActivity.walking;
+          } else {
+            resident
+              ..target = null
+              ..activity = ResidentActivity.wandering;
+          }
+        }
+      }
+    }
+    final busPosition = _positionOnRoute(routePoints, current);
+    for (final resident in residents.where((resident) => resident.onBus)) {
+      resident.position = busPosition;
+    }
+  }
+
+  static IsometricPoint _positionOnRoute(
+      List<IsometricPoint> points, double progress) {
+    var totalLength = 0.0;
+    for (var i = 1; i < points.length; i++) {
+      final dx = points[i].x - points[i - 1].x;
+      final dy = points[i].y - points[i - 1].y;
+      totalLength += sqrt(dx * dx + dy * dy);
+    }
+    var remaining = totalLength * progress;
+    for (var i = 1; i < points.length; i++) {
+      final from = points[i - 1], to = points[i];
+      final dx = to.x - from.x, dy = to.y - from.y;
+      final length = sqrt(dx * dx + dy * dy);
+      if (remaining <= length || i == points.length - 1) {
+        final part = length == 0 ? 0.0 : (remaining / length).clamp(0, 1);
+        return IsometricPoint(from.x + dx * part, from.y + dy * part);
+      }
+      remaining -= length;
+    }
+    return points.last;
   }
 
   void _updateSocial(double dt) {
