@@ -4,6 +4,30 @@ import 'city_economy.dart';
 import 'isometric_grid.dart';
 import 'resident_simulation.dart';
 
+class ChronicleEntry {
+  const ChronicleEntry({
+    required this.year,
+    required this.category,
+    required this.text,
+  });
+
+  final int year;
+  final String category;
+  final String text;
+
+  Map<String, dynamic> toJson() => {
+        'year': year,
+        'category': category,
+        'text': text,
+      };
+
+  factory ChronicleEntry.fromJson(Map data) => ChronicleEntry(
+        year: _int(data['year'], 1).clamp(1, 1 << 31),
+        category: _text(data['category'], 'Событие'),
+        text: _text(data['text'], ''),
+      );
+}
+
 class HouseholdState {
   HouseholdState({
     required this.id,
@@ -401,6 +425,7 @@ class CivilizationSimulation {
   final List<HouseholdState> households = [];
   final List<WorldSettlementState> worldSettlements = [];
   final List<ForeignNationState> foreignNations = [];
+  final List<ChronicleEntry> history = [];
   final Map<String, int> milestones = {};
   double _yearTimer = 0;
   double _educationTimer = 0;
@@ -485,6 +510,7 @@ class CivilizationSimulation {
         'foundedSettlements': foundedSettlements,
         'worldSettlements': worldSettlements.map((city) => city.toJson()).toList(),
         'foreignNations': foreignNations.map((state) => state.toJson()).toList(),
+        'history': history.map((entry) => entry.toJson()).toList(),
         'diplomacy': diplomacy,
         'civicBuildings': civicBuildings.toList(),
         'factions': factions.map((faction) => faction.toJson()).toList(),
@@ -584,6 +610,12 @@ class CivilizationSimulation {
         ..addAll((data['foreignNations'] as List)
             .whereType<Map>()
             .map(ForeignNationState.fromJson));
+    }
+    if (data['history'] is List) {
+      state.history.addAll((data['history'] as List)
+          .whereType<Map>()
+          .map(ChronicleEntry.fromJson)
+          .take(5000));
     }
     if (data['diplomacy'] is Map) {
       state.diplomacy
@@ -746,6 +778,8 @@ class CivilizationSimulation {
     while (_yearTimer >= 60) {
       _yearTimer -= 60;
       year++;
+      _addHistory('Летопись',
+          'Год $year · ${residents.length} жителей · $currentEra');
       if (year % 5 == 0) {
         events.add('📜 $year год: $nationName продолжает развиваться');
       }
@@ -879,7 +913,32 @@ class CivilizationSimulation {
     _updateEra(residents.length, events);
     _updateNation(dt, residents, market, events);
     _sickCount = residents.where((r) => r.sick).length;
+    for (final event in events) {
+      _addHistory(_historyCategory(event), event);
+    }
     return events;
+  }
+
+  void _addHistory(String category, String text) {
+    history.add(ChronicleEntry(year: year, category: category, text: text));
+    if (history.length > 5000) history.removeRange(0, history.length - 5000);
+  }
+
+  static String _historyCategory(String event) {
+    if (event.contains('Эпох') || event.contains('год')) return 'Эпоха';
+    if (event.contains('🎭') || event.contains('🎉') || event.contains('🏛️')) {
+      return 'Культура';
+    }
+    if (event.contains('⚔️') || event.contains('🏳️') || event.contains('🛡️')) {
+      return 'Государство';
+    }
+    if (event.contains('🏙️') || event.contains('🚶') || event.contains('торгов')) {
+      return 'Мир';
+    }
+    if (event.contains('🏥') || event.contains('🦠') || event.contains('🔥')) {
+      return 'Город';
+    }
+    return 'Событие';
   }
 
   void _updateWorldNetwork(List<ResidentAgent> residents, MarketState market,

@@ -1118,6 +1118,9 @@ class _TopBar extends StatelessWidget {
                       _showCivilizationPanel(context, game, 'Достижения')),
               _NavButton(Icons.public, 'Мир',
                   onPressed: () => _showCivilizationPanel(context, game, 'Мир')),
+              _NavButton(Icons.history, 'Летопись',
+                  onPressed: () =>
+                      _showCivilizationPanel(context, game, 'Летопись')),
             ]),
           ],
         ]),
@@ -1324,6 +1327,25 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
             _line(
                 '${state.name} · ${state.population} жителей',
                 'казна ${state.treasury.floor()} · армия ${state.army} · связь ${state.relation.round()}%'),
+        ],
+      'Летопись' => <Widget>[
+          _line('Записей', '${civ.history.length}'),
+          _line('Текущий год · эпоха', '${civ.year} · ${civ.currentEra}'),
+          const Divider(),
+          if (civ.history.isEmpty)
+            const Text('События появятся по мере развития поселения.'),
+          for (final entry in civ.history.reversed.take(80))
+            ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: CircleAvatar(
+                radius: 17,
+                child: Text('${entry.year}',
+                    style: const TextStyle(fontSize: 10)),
+              ),
+              title: Text(entry.text),
+              subtitle: Text(entry.category),
+            ),
         ],
       'Население' => <Widget>[
           _line('Жителей', '${people.length}'),
