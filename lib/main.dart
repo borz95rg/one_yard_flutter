@@ -670,8 +670,12 @@ class SettlementMap extends Component {
     }
     final sorted = [..._buildings]
       ..sort((a, b) => (a.column + a.row).compareTo(b.column + b.row));
+    final roadKeys = _buildings
+        .where((building) => building.kind == 7)
+        .map((building) => building.row * columns + building.column)
+        .toSet();
     for (final building in sorted) {
-      if (building.visible) _drawBuilding(canvas, building);
+      if (building.visible) _drawBuilding(canvas, building, roadKeys);
     }
     _drawTraffic(canvas);
     _drawPeople(canvas);
@@ -729,6 +733,11 @@ class SettlementMap extends Component {
     if (artwork == null || people.residents.length < 3) return;
     final stage = (people.residents.length / 70).clamp(0, 1).toDouble();
     final count = math.min(22, 2 + (stage * 20).floor());
+    final roadRoute = _connectedRoadRoute();
+    final playerRoadPoints = roadRoute
+        .map((building) => cellCenter(building.column, building.row))
+        .map((point) => Offset(point.x, point.y))
+        .toList(growable: false);
     final colors = [
       const Color(0xffbd594a),
       const Color(0xff6d9db7),
@@ -738,15 +747,24 @@ class SettlementMap extends Component {
     ];
     const artWidth = 1195.0, artHeight = 600.0;
     for (var i = 0; i < count; i++) {
-      final route = _trafficRoutes[i % _trafficRoutes.length];
+      final usesPlayerRoads = playerRoadPoints.length > 1;
+      final route = usesPlayerRoads
+          ? playerRoadPoints
+          : _trafficRoutes[i % _trafficRoutes.length];
       final direction = i.isEven ? 1.0 : -1.0;
       final cycle = (_timeOfDay * 24 * 2.4 * direction + i * 1.73) % 18;
       final progress = ((cycle + 18) % 18) / 18;
       final sample = _sampleRoute(route, progress);
-      final x = (sample.$1.dx / artWidth - .5) * 1768;
-      final y = (sample.$1.dy / artHeight - .5) * 936;
-      final tangentX = sample.$2.dx * 1768 / artWidth;
-      final tangentY = sample.$2.dy * 936 / artHeight;
+      final x = usesPlayerRoads
+          ? sample.$1.dx
+          : (sample.$1.dx / artWidth - .5) * 1768;
+      final y = usesPlayerRoads
+          ? sample.$1.dy
+          : (sample.$1.dy / artHeight - .5) * 936;
+      final tangentX =
+          usesPlayerRoads ? sample.$2.dx : sample.$2.dx * 1768 / artWidth;
+      final tangentY =
+          usesPlayerRoads ? sample.$2.dy : sample.$2.dy * 936 / artHeight;
       final angle = math.atan2(tangentY, tangentX);
       final bus = stage > .68 && i % 7 == 0;
       final length = bus ? 28.0 : 17.0;
@@ -785,6 +803,73 @@ class SettlementMap extends Component {
       canvas.drawCircle(Offset(length / 2 - 1, 1.5), .8, lamp);
       canvas.restore();
     }
+  }
+
+  List<_Building> _connectedRoadRoute() {
+    final roads = _buildings.where((building) => building.kind == 7).toList();
+    if (roads.length < 2) return const [];
+    roads.sort((a, b) =>
+        (a.row * columns + a.column).compareTo(b.row * columns + b.column));
+    int key(_Building building) => building.row * columns + building.column;
+    final roadByKey = {for (final road in roads) key(road): road};
+    Iterable<int> adjacentKeys(int currentKey) sync* {
+      final row = currentKey ~/ columns;
+      final column = currentKey % columns;
+      for (final (dc, dr) in const [(1, 0), (-1, 0), (0, 1), (0, -1)]) {
+        final nextColumn = column + dc, nextRow = row + dr;
+        if (nextColumn < 0 ||
+            nextColumn >= columns ||
+            nextRow < 0 ||
+            nextRow >= rows) {
+          continue;
+        }
+        final nextKey = nextRow * columns + nextColumn;
+        if (roadByKey.containsKey(nextKey)) yield nextKey;
+      }
+    }
+
+    final unseen = roadByKey.keys.toSet();
+    var largestComponent = <int>[];
+    while (unseen.isNotEmpty) {
+      final first = unseen.first;
+      final componentQueue = <int>[first];
+      final component = <int>{first};
+      unseen.remove(first);
+      for (var cursor = 0; cursor < componentQueue.length; cursor++) {
+        for (final nextKey in adjacentKeys(componentQueue[cursor])) {
+          if (component.add(nextKey)) {
+            unseen.remove(nextKey);
+            componentQueue.add(nextKey);
+          }
+        }
+      }
+      if (component.length > largestComponent.length) {
+        largestComponent = component.toList();
+      }
+    }
+    if (largestComponent.length < 2) return const [];
+
+    final startKey = largestComponent.first;
+    final queue = <int>[startKey];
+    final previous = <int, int?>{startKey: null};
+    for (var cursor = 0; cursor < queue.length; cursor++) {
+      for (final nextKey in adjacentKeys(queue[cursor])) {
+        if (!previous.containsKey(nextKey)) {
+          previous[nextKey] = queue[cursor];
+          queue.add(nextKey);
+        }
+      }
+    }
+    final destination = queue.last;
+    final route = <_Building>[];
+    int? currentKey = destination;
+    while (currentKey != null) {
+      final current = roadByKey[currentKey];
+      if (current == null) break;
+      route.add(current);
+      currentKey = previous[currentKey];
+    }
+    return route.reversed.toList(growable: false);
   }
 
   static (Offset, Offset) _sampleRoute(List<Offset> points, double progress) {
@@ -922,12 +1007,41 @@ class SettlementMap extends Component {
     }
   }
 
-  void _drawBuilding(Canvas canvas, _Building b) {
+  void _drawBuilding(Canvas canvas, _Building b, Set<int> roadKeys) {
     final c = cellCenter(b.column, b.row);
     if (b.kind == 7) {
-      canvas.drawOval(
-          Rect.fromCenter(center: Offset(c.x, c.y), width: 54, height: 16),
-          Paint()..color = const Color(0xff867a5e));
+      final road = Path()
+        ..moveTo(c.x, c.y - tileH / 2)
+        ..lineTo(c.x + tileW / 2, c.y)
+        ..lineTo(c.x, c.y + tileH / 2)
+        ..lineTo(c.x - tileW / 2, c.y)
+        ..close();
+      canvas.drawPath(road, Paint()..color = const Color(0x880d1714));
+      canvas.save();
+      canvas.translate(0, 2);
+      canvas.drawPath(road, Paint()..color = const Color(0xff69695f));
+      canvas.restore();
+      final centerLine = Paint()
+        ..color = const Color(0xffe1d1a3)
+        ..strokeWidth = 1.4
+        ..strokeCap = StrokeCap.round;
+      for (final (dc, dr, dx, dy) in const [
+        (1, 0, 34.0, 18.0),
+        (-1, 0, -34.0, -18.0),
+        (0, 1, -34.0, 18.0),
+        (0, -1, 34.0, -18.0),
+      ]) {
+        final nextColumn = b.column + dc, nextRow = b.row + dr;
+        final connected = nextColumn >= 0 &&
+            nextColumn < columns &&
+            nextRow >= 0 &&
+            nextRow < rows &&
+            roadKeys.contains(nextRow * columns + nextColumn);
+        if (connected) {
+          canvas.drawLine(
+              Offset(c.x, c.y), Offset(c.x + dx, c.y + dy), centerLine);
+        }
+      }
       return;
     }
     if (b.kind == 8) {
