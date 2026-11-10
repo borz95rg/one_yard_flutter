@@ -1,24 +1,45 @@
 # Один двор — целая цивилизация: Flutter migration foundation
 
-This is the first isolated migration increment. It does not replace or modify
+This is an incremental migration foundation. It does not replace or modify
 `one_yard_civilization_v19.html`.
 
-## Implemented in this stage
+## Implemented
+
+### Stage 1 — viewport camera math
 
 - Dependency-free 2D viewport camera math in `lib/game/viewport_camera.dart`.
 - Drag/pan using screen-space deltas.
 - Pinch zoom around the two-finger focal point, preserving the world point
   beneath the fingers.
 - Configurable zoom limits and screen/world coordinate conversion.
-- Unit tests for inverse coordinate conversion, focal zoom, zoom clamping,
-  and drag direction.
+
+### Stage 2 — versioned save format
+
+- `GameSave` JSON envelope with explicit format, schema version, UTC timestamp
+  and data-only payload.
+- Rejects malformed roots and unsupported future schema versions.
+- Legacy HTML localStorage saves are retained losslessly in `legacyHtmlSave`;
+  field-by-field conversion remains pending.
+
+### Stage 3 — app-private save storage and recovery
+
+- `IoSaveFileStore` stores files in the app-private Application Support folder,
+  not public Downloads/Music/media directories.
+- `GameSaveRepository` writes a complete temporary file before replacing the
+  primary save.
+- The previous primary is retained as `.bak` after a successful new save.
+- If the new temp file cannot be promoted, the previous primary is restored.
+- If the primary JSON is corrupt/unsupported, loading falls back to the backup
+  without deleting or overwriting the damaged primary.
+- File I/O is behind `SaveFileStore`, allowing recovery logic to be tested with
+  an in-memory fake.
 
 ## UI direction confirmed
 
 Use a modern isometric city-builder layout: isometric world view; compact top
 bar for resources, population, time and era; contextual side panels; bottom
 construction toolbar; separate research panel. Retain the mountain-settlement
-identity and the existing simulation systems from HTML/JS Canvas v19.
+identity and existing simulation systems from HTML/JS Canvas v19.
 
 ## Run tests on a Flutter workstation
 
@@ -27,50 +48,34 @@ flutter pub get
 flutter test
 ```
 
-## Next integration step
+Tests have been added for camera math, save-envelope round-trip/legacy
+preservation, storage round-trip, backup retention, corrupt-primary recovery,
+and rollback after a simulated rename failure. This environment does not have
+Flutter or Dart installed, so these tests have not been executed here.
 
-Create the Flame `GameWidget` and adapt `ViewportCamera` to
-`CameraComponent`/`CameraComponent.viewfinder`. Connect `ScaleStartDetails` and
-`ScaleUpdateDetails` from Flutter's `GestureDetector` (or Flame pointer events)
-to pan and focal zoom. Then migrate the HTML v19 state into typed Dart models;
-do not rewrite resident/economy/social simulation until its data structures
-and save format have been mapped.
+## Important source audit
 
-## Source status
-
-The original HTML v19 source is retained separately and is the behavioral
-reference. This folder is a starter module, not yet a complete runnable game.
-
-## Findings from the v19 HTML save/load audit
-
-The source currently writes `version: 18` to `localStorage` under
-`one_yard_save`, despite the supplied file being named v19. The save includes
+The supplied HTML source currently writes `version: 18` to `localStorage` under
+`one_yard_save`, despite the supplied file being named v19. Its save includes
 world/season/weather/nature/culture/nation/economy/research fields, objects,
 residents, factions and family/social identifiers. Loading respawns residents
 and maps saved resident IDs to newly generated runtime IDs by array index;
-therefore it does not preserve the residents' exact runtime positions/IDs.
+therefore it does not preserve residents' exact runtime positions/IDs.
 
-The Flutter save layer must use an explicit schema version and migrations, and
-must not assume that the HTML save's version number matches its filename. A
-future importer should preserve the HTML save as a read-only legacy format and
-map all supported fields deliberately.
+The Flutter save layer must use explicit schema migrations and must not assume
+the HTML save version matches its filename. The current importer only wraps
+and preserves the legacy object; it does not yet map simulation fields into
+Dart domain models.
 
-## Stage 2 — versioned save container
+## Next integration step
 
-Added `lib/persistence/game_save.dart` and `test/game_save_test.dart`.
+Build the Flame `GameWidget` and connect `ViewportCamera` to Flame's camera and
+Flutter scale gestures. In parallel, inspect the HTML simulation structures
+and migrate a small, verified domain slice (world/time/season first) into typed
+Dart models. Do not rewrite resident/economy/social simulation until their data
+structures and behavior are mapped.
 
-- Flutter saves use an explicit `format`, `schemaVersion`, UTC timestamp and
-  JSON `payload`.
-- Decoder rejects malformed roots and unsupported future schema versions.
-- Legacy HTML localStorage saves (including the observed `version: 18`) are
-  wrapped without dropping any original fields. The original object is kept in
-  `legacyHtmlSave`; field-by-field conversion is intentionally deferred until
-  typed models are verified.
-- This stage does not yet write to Android storage. The next integration is a
-  repository using `path_provider` (or an equivalent app-private directory),
-  atomic temp-file replacement, and a backup/restore test.
+## Source status
 
-Tests added: Flutter save round-trip, full legacy-object preservation, and
-malformed/unsupported input rejection. Run `flutter test` on a machine with the
-Flutter SDK; this environment has no Flutter or Dart executable, so tests could
-not be executed here.
+The original HTML v19 source remains the behavioral reference. This folder is
+still a migration foundation, not a complete runnable game or APK.
