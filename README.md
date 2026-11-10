@@ -1,6 +1,6 @@
-# Один двор — целая цивилизация: Flutter migration foundation
+# Один двор — целая цивилизация: Flutter Android prototype
 
-This is an incremental migration foundation. It does not replace or modify
+This is an incremental Flutter migration. It does not replace or modify
 `one_yard_civilization_v19.html`.
 
 ## Implemented
@@ -74,6 +74,23 @@ This is an incremental migration foundation. It does not replace or modify
 - Validates map and tile dimensions; includes round-trip and hit-test test cases.
 - This is the mathematical foundation only: no Flame `GameWidget`, painter, sprites, gesture wiring or playable map has been added yet.
 
+### Stage 7 — first Flame settlement scene
+
+- Added a runnable Flutter Android app and Flame `GameWidget`.
+- Draws an isometric settlement with terrain, roads, a river, trees, houses, a
+  central fountain and resident figures.
+- Added a responsive resource bar, settlement/ecology panels, and a bottom
+  construction toolbar. Selecting a tool places another sample building.
+- One-finger drag pans the camera; two-finger gestures pan and zoom.
+- Added Android project scaffolding and a GitHub Actions workflow. Pushes to
+  `main` or `master`, or a manual workflow run, build a release APK and store it
+  as the `one-yard-android-apk` artifact.
+
+This is the first playable rendering shell, not the complete HTML-game port:
+toolbar construction currently adds visual sample buildings, and displayed
+population/resource values are sample UI data. The nature and save modules are
+not wired into this screen yet.
+
 ## UI direction confirmed
 
 Use a modern isometric city-builder layout: isometric world view; compact top
@@ -81,17 +98,16 @@ bar for resources, population, time and era; contextual side panels; bottom
 construction toolbar; separate research panel. Retain the mountain-settlement
 identity and existing simulation systems from HTML/JS Canvas v19.
 
-## Run tests on a Flutter workstation
+## Build and run
 
 ```bash
 flutter pub get
-flutter test
+flutter run
 ```
 
-Tests have been added for camera math, save-envelope round-trip/legacy
-preservation, storage round-trip, backup retention, corrupt-primary recovery,
-and rollback after a simulated rename failure. This environment does not have
-Flutter or Dart installed, so these tests have not been executed here.
+Build a local release APK with `flutter build apk --release`. GitHub Actions
+performs the same release build and publishes the APK as a downloadable
+workflow artifact after a push to the default branch.
 
 ## Important source audit
 
@@ -109,13 +125,12 @@ Dart domain models.
 
 ## Next integration step
 
-Build the Flame `GameWidget` and connect `ViewportCamera` to Flame's camera and
-Flutter scale gestures. In parallel, inspect the HTML simulation structures
-and migrate a small, verified domain slice (world/time/season first) into typed
-Dart models. Do not rewrite resident/economy/social simulation until their data
-structures and behavior are mapped.
+Connect the existing versioned save and nature simulation to the game screen,
+then migrate resident and economy rules from the HTML source in small verified
+slices. Preserve unported legacy save fields until their Dart models exist.
 
 ## Source status
 
-The original HTML v19 source remains the behavioral reference. This folder is
-still a migration foundation, not a complete runnable game or APK.
+The original HTML v19 source remains the behavioral reference. This folder
+contains a runnable visual prototype and migration foundation, not a complete
+feature-equivalent port.

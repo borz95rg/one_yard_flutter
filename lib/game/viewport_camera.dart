@@ -20,12 +20,11 @@ class CameraPoint {
 
 class ViewportCamera {
   ViewportCamera({
-    CameraPoint center = const CameraPoint(0, 0),
+    this.center = const CameraPoint(0, 0),
     double zoom = 1,
     this.minZoom = 0.45,
     this.maxZoom = 3.5,
-  })  : center = center,
-        zoom = zoom.clamp(minZoom, maxZoom).toDouble() {
+  })  : zoom = zoom.clamp(minZoom, maxZoom).toDouble() {
     if (minZoom <= 0 || maxZoom < minZoom) {
       throw ArgumentError('Invalid zoom limits');
     }
