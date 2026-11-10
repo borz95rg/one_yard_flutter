@@ -97,6 +97,7 @@ class ResidentAgent {
   bool onBus = false;
   int? busOriginStopId;
   int? busDestinationStopId;
+  int transitTrips = 0;
   bool onShift = false;
   bool travelingToWork = false;
   bool returningHome = false;
@@ -144,6 +145,7 @@ class ResidentAgent {
         'onBus': onBus,
         'busOriginStopId': busOriginStopId,
         'busDestinationStopId': busDestinationStopId,
+        'transitTrips': transitTrips,
         'friendIds': friendIds,
         'rivalIds': rivalIds,
         'parentIds': parentIds,
@@ -200,7 +202,8 @@ class ResidentAgent {
       ..waitingForBus = data['waitingForBus'] == true
       ..onBus = data['onBus'] == true
       ..busOriginStopId = _optionalInteger(data['busOriginStopId'])
-      ..busDestinationStopId = _optionalInteger(data['busDestinationStopId']);
+      ..busDestinationStopId = _optionalInteger(data['busDestinationStopId'])
+      ..transitTrips = _integer(data['transitTrips'], 0).clamp(0, 1 << 31);
     agent.friendIds.addAll(_integerList(data['friendIds']));
     agent.rivalIds.addAll(_integerList(data['rivalIds']));
     agent.parentIds.addAll(_integerList(data['parentIds']));
@@ -408,6 +411,8 @@ class ResidentSimulation {
     double busProgress = 0,
     Map<int, double> busStopProgress = const {},
     List<IsometricPoint> busRoutePoints = const [],
+    int busCapacity = 4,
+    bool Function(ResidentAgent)? onBusBoard,
   }) {
     if (!dt.isFinite || dt < 0) throw ArgumentError.value(dt, 'dt');
     final shiftHours = hour >= 8 && hour < 18;
@@ -513,7 +518,8 @@ class ResidentSimulation {
     }
     _updateSocial(dt);
     _updateFamilies(dt);
-    _updateBusPassengers(busProgress, busStopProgress, busRoutePoints);
+    _updateBusPassengers(
+        busProgress, busStopProgress, busRoutePoints, busCapacity, onBusBoard);
   }
 
   ResidentSite? _findTarget(ResidentAgent r) {
@@ -677,8 +683,12 @@ class ResidentSimulation {
       ..activity = ResidentActivity.walking;
   }
 
-  void _updateBusPassengers(double progress, Map<int, double> stopProgress,
-      List<IsometricPoint> routePoints) {
+  void _updateBusPassengers(
+      double progress,
+      Map<int, double> stopProgress,
+      List<IsometricPoint> routePoints,
+      int busCapacity,
+      bool Function(ResidentAgent)? onBusBoard) {
     final current = progress.clamp(0, 1).toDouble();
     final previous = _lastBusProgress;
     _lastBusProgress = current;
@@ -710,15 +720,6 @@ class ResidentSimulation {
       final stop = sites.where((site) => site.mapId == arrival.key).firstOrNull;
       if (stop == null) continue;
       for (final resident in residents) {
-        if (resident.waitingForBus &&
-            resident.activity == ResidentActivity.waitingAtBusStop &&
-            resident.busOriginStopId == arrival.key) {
-          resident
-            ..waitingForBus = false
-            ..onBus = true
-            ..target = null
-            ..activity = ResidentActivity.ridingBus;
-        }
         if (resident.onBus && resident.busDestinationStopId == arrival.key) {
           resident
             ..onBus = false
@@ -741,6 +742,23 @@ class ResidentSimulation {
               ..activity = ResidentActivity.wandering;
           }
         }
+      }
+      var occupancy = residents.where((resident) => resident.onBus).length;
+      for (final resident in residents) {
+        if (occupancy >= max(0, busCapacity)) break;
+        if (!resident.waitingForBus ||
+            resident.activity != ResidentActivity.waitingAtBusStop ||
+            resident.busOriginStopId != arrival.key) {
+          continue;
+        }
+        if (onBusBoard != null && !onBusBoard(resident)) continue;
+        resident.transitTrips++;
+        resident
+          ..waitingForBus = false
+          ..onBus = true
+          ..target = null
+          ..activity = ResidentActivity.ridingBus;
+        occupancy++;
       }
     }
     final busPosition = _positionOnRoute(routePoints, current);

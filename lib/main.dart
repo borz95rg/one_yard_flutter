@@ -619,6 +619,9 @@ class SettlementMap extends Component {
           : route.points
               .map((point) => IsometricPoint(point.dx, point.dy))
               .toList(),
+      busCapacity:
+          civilization.civicBuildings.contains('Транспортное депо') ? 12 : 4,
+      onBusBoard: market.collectTransitFare,
     );
     market.update(
       dt: dt,
@@ -1618,6 +1621,8 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
           _line('Стройматериалы', economy.materials.toStringAsFixed(1)),
           _line('Пассажиры: ожидают · едут',
               '${people.where((r) => r.activity == ResidentActivity.waitingAtBusStop).length} · ${people.where((r) => r.onBus).length}'),
+          _line('Совершено автобусных поездок',
+              '${people.fold<int>(0, (total, r) => total + r.transitTrips)}'),
           const SizedBox(height: 8),
           const Text(
               'Выберите инструмент в нижней панели и нажмите на свободную клетку карты.'),
@@ -1670,6 +1675,28 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
               setState(() {});
             },
           ),
+          const SizedBox(height: 5),
+          Text(
+              'Цена билета: ${economy.busTicketFare.toStringAsFixed(2)} монет'),
+          Slider(
+            value: economy.busTicketFare.clamp(0, 3),
+            min: 0,
+            max: 3,
+            divisions: 12,
+            label: economy.busTicketFare.toStringAsFixed(2),
+            onChanged: (value) {
+              economy.busTicketFare = value;
+              widget.game.refreshFromMap();
+              setState(() {});
+            },
+          ),
+          _line('Билеты проданы · выручка',
+              '${economy.ticketsSold} · ${economy.transitRevenue.toStringAsFixed(1)} монет'),
+          _line(
+              'Вместимость автобуса',
+              civ.civicBuildings.contains('Транспортное депо')
+                  ? '12 мест · депо построено'
+                  : '4 места · депо увеличит вместимость'),
           _line('Мировая торговля', '${civ.worldTradeVolume.floor()}'),
           _line('Фермы · обрабатываемые поля',
               '${map._buildings.where((b) => b.kind == 1).length} · ${map._buildings.where((b) => b.kind == 1).length * 4}'),

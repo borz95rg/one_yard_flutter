@@ -14,6 +14,7 @@ class MarketState {
     this.treasury = 0,
     this.taxRate = 0.08,
     this.storageCapacity = 9999,
+    this.busTicketFare = .75,
   });
 
   double food;
@@ -26,6 +27,9 @@ class MarketState {
   double treasury;
   double taxRate;
   double storageCapacity;
+  double busTicketFare;
+  double transitRevenue = 0;
+  int ticketsSold = 0;
   double fishProduction = 0;
   double meatProduction = 0;
   double _timer = 0;
@@ -50,6 +54,9 @@ class MarketState {
         'treasury': treasury,
         'taxRate': taxRate,
         'storageCapacity': storageCapacity,
+        'busTicketFare': busTicketFare,
+        'transitRevenue': transitRevenue,
+        'ticketsSold': ticketsSold,
         'fishProduction': fishProduction,
         'meatProduction': meatProduction,
         'timer': _timer,
@@ -66,10 +73,22 @@ class MarketState {
         treasury: _read(data, 'treasury', 0),
         taxRate: _read(data, 'taxRate', .08).clamp(0, .5).toDouble(),
         storageCapacity: _read(data, 'storageCapacity', 9999),
+        busTicketFare: _read(data, 'busTicketFare', .75).clamp(0, 3).toDouble(),
       )
         ..fishProduction = _read(data, 'fishProduction', 0)
         ..meatProduction = _read(data, 'meatProduction', 0)
+        ..transitRevenue = _read(data, 'transitRevenue', 0)
+        ..ticketsSold = _read(data, 'ticketsSold', 0).floor().clamp(0, 1 << 31)
         .._timer = _read(data, 'timer', 0).clamp(0, 10).toDouble();
+
+  bool collectTransitFare(ResidentAgent resident) {
+    if (busTicketFare > 0 && resident.wallet < busTicketFare) return false;
+    resident.wallet = max(0, resident.wallet - busTicketFare);
+    treasury += busTicketFare;
+    transitRevenue += busTicketFare;
+    ticketsSold++;
+    return true;
+  }
 
   /// Ports updateMarketEconomy() in the HTML source as a ten-second market
   /// step. Site roles supply the starting production and trade buildings.
