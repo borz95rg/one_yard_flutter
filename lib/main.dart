@@ -293,7 +293,9 @@ class SettlementGame extends FlameGame {
       tileWidth: SettlementMap.tileW,
       tileHeight: SettlementMap.tileH,
     ).cellAt(IsometricPoint(worldX + origin.x, worldY + origin.y));
-    return cell != null && map.placeBuilding(cell, kind);
+    if (cell == null) return false;
+    if (kind >= 12) return map.paintTerrain(cell, kind - 12);
+    return map.placeBuilding(cell, kind);
   }
 
   @override
@@ -316,6 +318,12 @@ class _Building {
   final bool visible;
 }
 
+class _BusRoute {
+  const _BusRoute({required this.points, required this.stopProgress});
+  final List<Offset> points;
+  final Map<int, double> stopProgress;
+}
+
 class SettlementMap extends Component {
   SettlementMap({this.artwork});
 
@@ -334,6 +342,7 @@ class SettlementMap extends Component {
     const _Building(6, 14, 0),
     const _Building(21, 17, 1),
   ];
+  final Map<int, int> _terrainOverrides = {};
   late ResidentSimulation people = ResidentSimulation.initial(
     sites: _defaultSites(),
     width: tileW * columns,
@@ -343,6 +352,8 @@ class SettlementMap extends Component {
   final NatureSimulation nature = NatureSimulation();
   CivilizationSimulation civilization = CivilizationSimulation();
   WorldState climate = WorldState.initial();
+  _BusRoute? _cachedBusRoute;
+  bool _busRouteDirty = true;
   double _timeOfDay = .35;
   double _housingGrowthTimer = 0;
   final List<String> recentEvents = [];
@@ -350,7 +361,8 @@ class SettlementMap extends Component {
 
   List<ResidentSite> _defaultSites() => [
         for (final b in _buildings)
-          ResidentSite(cellCenter(b.column, b.row), _roleForKind(b.kind)),
+          ResidentSite(cellCenter(b.column, b.row), _roleForKind(b.kind),
+              mapId: b.row * columns + b.column),
         ResidentSite(cellCenter(23, 12), 'источник воды'),
         ResidentSite(cellCenter(5, 18), 'парк отдыха'),
       ];
@@ -381,12 +393,43 @@ class SettlementMap extends Component {
         'civilization': civilization.toJson(),
         'worldState': climate.toJson(),
         'timeOfDay': _timeOfDay,
+        'terrain': {
+          for (final entry in _terrainOverrides.entries)
+            '${entry.key}': entry.value,
+        },
       };
+
+  _BusRoute? get _busRoute {
+    if (_busRouteDirty) {
+      _cachedBusRoute = _createBusRoute();
+      _busRouteDirty = false;
+    }
+    return _cachedBusRoute;
+  }
+
+  double get _busProgress =>
+      (((_timeOfDay * 24 * 2.4) % 18) / 18).clamp(0, 1).toDouble();
 
   void restore(GameSave save) {
     final legacy = save.legacyHtmlSave;
     legacyHtmlSave = legacy;
     final payload = save.payload;
+    final savedTerrain = payload['terrain'];
+    if (savedTerrain is Map) {
+      _terrainOverrides.clear();
+      for (final entry in savedTerrain.entries) {
+        final key = int.tryParse('${entry.key}');
+        final type = entry.value;
+        if (key != null &&
+            key >= 0 &&
+            key < columns * rows &&
+            type is int &&
+            type >= 0 &&
+            type <= 3) {
+          _terrainOverrides[key] = type;
+        }
+      }
+    }
     final savedBuildings = payload['buildings'];
     if (savedBuildings is List) {
       final restored = <_Building>[];
@@ -400,7 +443,7 @@ class SettlementMap extends Component {
             row >= 0 &&
             row < rows &&
             kind >= 0 &&
-            kind < 8) {
+            kind < 12) {
           restored.add(_Building(col, row, kind,
               visible:
                   item['visible'] is bool ? item['visible'] as bool : true));
@@ -412,6 +455,7 @@ class SettlementMap extends Component {
           ..addAll(restored);
       }
     }
+    _busRouteDirty = true;
     final worldData = payload['worldState'];
     if (worldData is Map) {
       climate = WorldState.fromJson(Map<String, dynamic>.from(worldData));
@@ -525,33 +569,69 @@ class SettlementMap extends Component {
 
   bool placeBuilding(GridCell cell, int kind) {
     if (kind < 0 ||
-        kind > 7 ||
+        kind > 11 ||
         _buildings.any((b) => b.column == cell.column && b.row == cell.row)) {
       return false;
     }
-    final costs = [8.0, 12, 15, 20, 7, 22, 30, 4];
+    final terrain = _terrainOverrides[cell.row * columns + cell.column];
+    if (terrain == 2 || terrain == 3) return false;
+    if (kind == 8 && cell.column < 20) return false;
+    if (kind == 11 && !_hasAdjacentRoad(cell.column, cell.row)) return false;
+    final costs = [8.0, 12, 15, 20, 7, 22, 30, 4, 18, 20, 16, 8];
     final cost = costs[kind];
     if (market.materials < cost) {
       return false;
     }
     market.materials -= cost;
     _buildings.add(_Building(cell.column, cell.row, kind, visible: true));
-    people.sites.add(
-        ResidentSite(cellCenter(cell.column, cell.row), _roleForKind(kind)));
+    people.sites.add(ResidentSite(
+        cellCenter(cell.column, cell.row), _roleForKind(kind),
+        mapId: cell.row * columns + cell.column));
+    if (kind == 7 || kind == 11) _busRouteDirty = true;
     recentEvents.insert(
         0, 'Построено: ${_buildingName(kind)} (−${cost.toInt()} строймат.)');
     return true;
   }
 
+  bool paintTerrain(GridCell cell, int terrain) {
+    if (terrain < 0 ||
+        terrain > 4 ||
+        _buildings.any((b) => b.column == cell.column && b.row == cell.row)) {
+      return false;
+    }
+    final key = cell.row * columns + cell.column;
+    if (terrain == 4) {
+      if (_terrainOverrides.remove(key) == null) return true;
+      recentEvents.insert(0, 'Клетка карты возвращена к исходному ландшафту');
+    } else {
+      if (_terrainOverrides[key] == terrain) return true;
+      _terrainOverrides[key] = terrain;
+      final name = const ['луг', 'лес', 'вода', 'холм'][terrain];
+      recentEvents.insert(0, 'На карте создан участок: $name');
+    }
+    if (recentEvents.length > 8) {
+      recentEvents.removeRange(8, recentEvents.length);
+    }
+    return true;
+  }
+
+  bool _hasAdjacentRoad(int column, int row) => _buildings.any((building) =>
+      building.kind == 7 &&
+      (building.column - column).abs() + (building.row - row).abs() == 1);
+
   static String _buildingName(int kind) => const [
         'жилой дом',
-        'производство',
+        'ферма',
         'рынок',
         'инфраструктура',
         'парк',
         'служба',
         'уникальное здание',
         'дорога',
+        'рыбная пристань',
+        'животноводческая ферма',
+        'склад',
+        'автобусная остановка',
       ][kind];
 
   static String _roleForKind(int kind) => switch (kind) {
@@ -562,6 +642,10 @@ class SettlementMap extends Component {
         5 => 'больница',
         6 => 'памятник',
         7 => 'дорога',
+        8 => 'рыболовство',
+        9 => 'животноводство',
+        10 => 'склад',
+        11 => 'автобусная остановка',
         _ => 'совет',
       };
 
@@ -570,13 +654,29 @@ class SettlementMap extends Component {
     _timeOfDay = (_timeOfDay + dt / 180) % 1;
     _housingGrowthTimer += dt;
     final hour = (_timeOfDay * 24).floor();
-    people.update(dt, isNight: hour < 6 || hour >= 20, hour: hour);
+    final route = _busRoute;
+    people.update(
+      dt,
+      isNight: hour < 6 || hour >= 20,
+      hour: hour,
+      busProgress: _busProgress,
+      busStopProgress: route?.stopProgress ?? const {},
+      busRoutePoints: route == null
+          ? const []
+          : route.points
+              .map((point) => IsometricPoint(point.dx, point.dy))
+              .toList(),
+      busCapacity:
+          civilization.civicBuildings.contains('Транспортное депо') ? 12 : 4,
+      onBusBoard: market.collectTransitFare,
+    );
     market.update(
       dt: dt,
       residents: people.residents,
       sites: people.sites,
       technologyLevel: civilization.technologyLevel,
       eraIndex: civilization.eraIndex,
+      warehouses: _buildings.where((building) => building.kind == 10).length,
     );
     final cityEvents = civilization.update(
       dt: dt,
@@ -599,9 +699,11 @@ class SettlementMap extends Component {
       dt: dt,
       residentCount: people.residents.length,
       food: market.food,
+      farmCount: _buildings.where((building) => building.kind == 1).length,
+      technologyLevel: civilization.technologyLevel,
     );
     climate = result.state;
-    market.food = result.food;
+    market.food = math.min(result.food, market.storageCapacity);
     if (result.residentMoraleDelta != 0) {
       for (final resident in people.residents) {
         resident.morale = (resident.morale + result.residentMoraleDelta)
@@ -650,6 +752,8 @@ class SettlementMap extends Component {
         const Rect.fromLTWH(-884, -468, 1768, 936),
         Paint()..filterQuality = FilterQuality.high,
       );
+      _drawTerrain(canvas, overridesOnly: true);
+      _drawTrees(canvas, overridesOnly: true);
       _drawFactionTerritories(canvas);
     } else {
       _drawTerrain(canvas);
@@ -660,8 +764,12 @@ class SettlementMap extends Component {
     }
     final sorted = [..._buildings]
       ..sort((a, b) => (a.column + a.row).compareTo(b.column + b.row));
+    final roadKeys = _buildings
+        .where((building) => building.kind == 7)
+        .map((building) => building.row * columns + building.column)
+        .toSet();
     for (final building in sorted) {
-      if (building.visible) _drawBuilding(canvas, building);
+      if (building.visible) _drawBuilding(canvas, building, roadKeys);
     }
     _drawTraffic(canvas);
     _drawPeople(canvas);
@@ -719,6 +827,12 @@ class SettlementMap extends Component {
     if (artwork == null || people.residents.length < 3) return;
     final stage = (people.residents.length / 70).clamp(0, 1).toDouble();
     final count = math.min(22, 2 + (stage * 20).floor());
+    final roadRoute = _connectedRoadRoute();
+    final playerRoadPoints = roadRoute
+        .map((building) => cellCenter(building.column, building.row))
+        .map((point) => Offset(point.x, point.y))
+        .toList(growable: false);
+    final busRoutePoints = _busRoute?.points ?? const <Offset>[];
     final colors = [
       const Color(0xffbd594a),
       const Color(0xff6d9db7),
@@ -728,17 +842,30 @@ class SettlementMap extends Component {
     ];
     const artWidth = 1195.0, artHeight = 600.0;
     for (var i = 0; i < count; i++) {
-      final route = _trafficRoutes[i % _trafficRoutes.length];
+      final bus =
+          busRoutePoints.length > 1 ? i == 0 : stage > .68 && i % 7 == 0;
+      final usesBusStops = bus && busRoutePoints.length > 1;
+      final usesPlayerRoads = !usesBusStops && playerRoadPoints.length > 1;
+      final route = usesBusStops
+          ? busRoutePoints
+          : usesPlayerRoads
+              ? playerRoadPoints
+              : _trafficRoutes[i % _trafficRoutes.length];
       final direction = i.isEven ? 1.0 : -1.0;
       final cycle = (_timeOfDay * 24 * 2.4 * direction + i * 1.73) % 18;
       final progress = ((cycle + 18) % 18) / 18;
       final sample = _sampleRoute(route, progress);
-      final x = (sample.$1.dx / artWidth - .5) * 1768;
-      final y = (sample.$1.dy / artHeight - .5) * 936;
-      final tangentX = sample.$2.dx * 1768 / artWidth;
-      final tangentY = sample.$2.dy * 936 / artHeight;
+      final x = usesPlayerRoads
+          ? sample.$1.dx
+          : (sample.$1.dx / artWidth - .5) * 1768;
+      final y = usesPlayerRoads
+          ? sample.$1.dy
+          : (sample.$1.dy / artHeight - .5) * 936;
+      final tangentX =
+          usesPlayerRoads ? sample.$2.dx : sample.$2.dx * 1768 / artWidth;
+      final tangentY =
+          usesPlayerRoads ? sample.$2.dy : sample.$2.dy * 936 / artHeight;
       final angle = math.atan2(tangentY, tangentX);
-      final bus = stage > .68 && i % 7 == 0;
       final length = bus ? 28.0 : 17.0;
       final height = bus ? 9.0 : 7.0;
       canvas.save();
@@ -773,8 +900,174 @@ class SettlementMap extends Component {
       final lamp = Paint()..color = const Color(0xffffe6a3);
       canvas.drawCircle(Offset(length / 2 - 1, -1.5), .8, lamp);
       canvas.drawCircle(Offset(length / 2 - 1, 1.5), .8, lamp);
+      if (bus) {
+        final riders =
+            people.residents.where((resident) => resident.onBus).length;
+        for (var rider = 0; rider < math.min(5, riders); rider++) {
+          canvas.drawCircle(Offset(-5 + rider * 2.5, -1), 1,
+              Paint()..color = const Color(0xffffe5ae));
+        }
+      }
       canvas.restore();
     }
+  }
+
+  List<_Building> _connectedRoadRoute() {
+    final roads = _buildings.where((building) => building.kind == 7).toList();
+    if (roads.length < 2) return const [];
+    roads.sort((a, b) =>
+        (a.row * columns + a.column).compareTo(b.row * columns + b.column));
+    int key(_Building building) => building.row * columns + building.column;
+    final roadByKey = {for (final road in roads) key(road): road};
+    Iterable<int> adjacentKeys(int currentKey) sync* {
+      final row = currentKey ~/ columns;
+      final column = currentKey % columns;
+      for (final (dc, dr) in const [(1, 0), (-1, 0), (0, 1), (0, -1)]) {
+        final nextColumn = column + dc, nextRow = row + dr;
+        if (nextColumn < 0 ||
+            nextColumn >= columns ||
+            nextRow < 0 ||
+            nextRow >= rows) {
+          continue;
+        }
+        final nextKey = nextRow * columns + nextColumn;
+        if (roadByKey.containsKey(nextKey)) yield nextKey;
+      }
+    }
+
+    final unseen = roadByKey.keys.toSet();
+    var largestComponent = <int>[];
+    while (unseen.isNotEmpty) {
+      final first = unseen.first;
+      final componentQueue = <int>[first];
+      final component = <int>{first};
+      unseen.remove(first);
+      for (var cursor = 0; cursor < componentQueue.length; cursor++) {
+        for (final nextKey in adjacentKeys(componentQueue[cursor])) {
+          if (component.add(nextKey)) {
+            unseen.remove(nextKey);
+            componentQueue.add(nextKey);
+          }
+        }
+      }
+      if (component.length > largestComponent.length) {
+        largestComponent = component.toList();
+      }
+    }
+    if (largestComponent.length < 2) return const [];
+
+    final startKey = largestComponent.first;
+    final queue = <int>[startKey];
+    final previous = <int, int?>{startKey: null};
+    for (var cursor = 0; cursor < queue.length; cursor++) {
+      for (final nextKey in adjacentKeys(queue[cursor])) {
+        if (!previous.containsKey(nextKey)) {
+          previous[nextKey] = queue[cursor];
+          queue.add(nextKey);
+        }
+      }
+    }
+    final destination = queue.last;
+    final route = <_Building>[];
+    int? currentKey = destination;
+    while (currentKey != null) {
+      final current = roadByKey[currentKey];
+      if (current == null) break;
+      route.add(current);
+      currentKey = previous[currentKey];
+    }
+    return route.reversed.toList(growable: false);
+  }
+
+  _BusRoute? _createBusRoute() {
+    final stops = _buildings.where((building) => building.kind == 11).toList()
+      ..sort((a, b) =>
+          (a.row * columns + a.column).compareTo(b.row * columns + b.column));
+    if (stops.length < 2) return null;
+    final roads = <int, _Building>{
+      for (final road in _buildings.where((building) => building.kind == 7))
+        road.row * columns + road.column: road,
+    };
+    int? attachedRoadKey(_Building stop) {
+      for (final (dc, dr) in const [(1, 0), (-1, 0), (0, 1), (0, -1)]) {
+        final column = stop.column + dc, row = stop.row + dr;
+        if (column < 0 || column >= columns || row < 0 || row >= rows) continue;
+        final roadKey = row * columns + column;
+        if (roads.containsKey(roadKey)) return roadKey;
+      }
+      return null;
+    }
+
+    List<int> roadPath(int start, int destination) {
+      if (!roads.containsKey(start) || !roads.containsKey(destination)) {
+        return const [];
+      }
+      final queue = <int>[start];
+      final previous = <int, int?>{start: null};
+      for (var cursor = 0; cursor < queue.length; cursor++) {
+        final key = queue[cursor];
+        if (key == destination) break;
+        final row = key ~/ columns, column = key % columns;
+        for (final (dc, dr) in const [(1, 0), (-1, 0), (0, 1), (0, -1)]) {
+          final nextColumn = column + dc, nextRow = row + dr;
+          if (nextColumn < 0 ||
+              nextColumn >= columns ||
+              nextRow < 0 ||
+              nextRow >= rows) {
+            continue;
+          }
+          final nextKey = nextRow * columns + nextColumn;
+          if (roads.containsKey(nextKey) && !previous.containsKey(nextKey)) {
+            previous[nextKey] = key;
+            queue.add(nextKey);
+          }
+        }
+      }
+      if (!previous.containsKey(destination)) return const [];
+      final path = <int>[];
+      int? key = destination;
+      while (key != null) {
+        path.add(key);
+        key = previous[key];
+      }
+      return path.reversed.toList(growable: false);
+    }
+
+    final roadKeys = stops.map(attachedRoadKey).toList();
+    if (roadKeys.any((key) => key == null)) return null;
+    final points = <Offset>[];
+    final stopPointIndexes = <int, int>{};
+    for (var i = 0; i < stops.length; i++) {
+      final from = stops[i], to = stops[(i + 1) % stops.length];
+      final path = roadPath(roadKeys[i]!, roadKeys[(i + 1) % stops.length]!);
+      if (path.isEmpty) return null;
+      if (points.isEmpty) {
+        final position = cellCenter(from.column, from.row);
+        points.add(Offset(position.x, position.y));
+        stopPointIndexes[from.row * columns + from.column] = 0;
+      }
+      for (final roadKey in path) {
+        final road = roads[roadKey]!;
+        final position = cellCenter(road.column, road.row);
+        points.add(Offset(position.x, position.y));
+      }
+      final stopPosition = cellCenter(to.column, to.row);
+      points.add(Offset(stopPosition.x, stopPosition.y));
+      stopPointIndexes[to.row * columns + to.column] = points.length - 1;
+    }
+    if (points.length < 2) return null;
+    var totalLength = 0.0;
+    final lengthAtIndex = List<double>.filled(points.length, 0);
+    for (var i = 1; i < points.length; i++) {
+      totalLength += (points[i] - points[i - 1]).distance;
+      lengthAtIndex[i] = totalLength;
+    }
+    if (totalLength == 0) return null;
+    final progressByStop = <int, double>{
+      for (final entry in stopPointIndexes.entries)
+        entry.key: (lengthAtIndex[entry.value] / totalLength) % 1,
+    };
+    return _BusRoute(points: points, stopProgress: progressByStop);
   }
 
   static (Offset, Offset) _sampleRoute(List<Offset> points, double progress) {
@@ -791,9 +1084,8 @@ class SettlementMap extends Component {
       final length = lengths[i];
       if (remaining <= length || i == lengths.length - 1) {
         final from = points[i], to = points[i + 1];
-        final fraction = length == 0
-            ? 0.0
-            : (remaining / length).clamp(0, 1).toDouble();
+        final fraction =
+            length == 0 ? 0.0 : (remaining / length).clamp(0, 1).toDouble();
         return (from + (to - from) * fraction, to - from);
       }
       remaining -= length;
@@ -817,10 +1109,12 @@ class SettlementMap extends Component {
     }
   }
 
-  void _drawTerrain(Canvas canvas) {
+  void _drawTerrain(Canvas canvas, {bool overridesOnly = false}) {
     final fill = Paint();
     for (var row = 0; row < rows; row++) {
       for (var col = 0; col < columns; col++) {
+        final type = _terrainOverrides[row * columns + col];
+        if (overridesOnly && type == null) continue;
         final c = cellCenter(col, row);
         final diamond = Path()
           ..moveTo(c.x, c.y - tileH / 2)
@@ -828,8 +1122,14 @@ class SettlementMap extends Component {
           ..lineTo(c.x, c.y + tileH / 2)
           ..lineTo(c.x - tileW / 2, c.y)
           ..close();
-        fill.color = Color.lerp(const Color(0xff467b48),
-            const Color(0xff8da75d), ((col * 19 + row * 13) % 9) / 100)!;
+        fill.color = switch (type) {
+          0 => const Color(0xff89a94d),
+          1 => const Color(0xff285b35),
+          2 => const Color(0xaa2789b6),
+          3 => const Color(0xff8a795a),
+          _ => Color.lerp(const Color(0xff467b48), const Color(0xff8da75d),
+              ((col * 19 + row * 13) % 9) / 100)!,
+        };
         canvas.drawPath(diamond, fill);
         canvas.drawPath(
             diamond,
@@ -837,6 +1137,20 @@ class SettlementMap extends Component {
               ..color = const Color(0x2276a75b)
               ..style = PaintingStyle.stroke
               ..strokeWidth = 1);
+        if (type == 3) {
+          final hill = Path()
+            ..moveTo(c.x - 16, c.y + 5)
+            ..lineTo(c.x, c.y - 13)
+            ..lineTo(c.x + 16, c.y + 5)
+            ..close();
+          canvas.drawPath(hill, Paint()..color = const Color(0xffb5a17b));
+          canvas.drawPath(
+              hill,
+              Paint()
+                ..color = const Color(0xff5d5344)
+                ..style = PaintingStyle.stroke
+                ..strokeWidth = 1.5);
+        }
       }
     }
   }
@@ -894,9 +1208,25 @@ class SettlementMap extends Component {
           ..strokeCap = StrokeCap.round);
   }
 
-  void _drawTrees(Canvas canvas) {
+  void _drawTrees(Canvas canvas, {bool overridesOnly = false}) {
+    if (overridesOnly) {
+      for (final entry in _terrainOverrides.entries) {
+        if (entry.value != 1) continue;
+        final col = entry.key % columns, row = entry.key ~/ columns;
+        final c = cellCenter(col, row);
+        canvas.drawCircle(Offset(c.x - 8, c.y - 4), 8,
+            Paint()..color = const Color(0xff387b3c));
+        canvas.drawCircle(Offset(c.x + 6, c.y + 2), 7,
+            Paint()..color = const Color(0xff519348));
+        canvas.drawCircle(
+            Offset(c.x, c.y - 1), 6, Paint()..color = const Color(0xff77a951));
+      }
+      return;
+    }
     for (var row = 1; row < rows; row += 3) {
       for (var col = 1; col < columns; col += 3) {
+        final override = _terrainOverrides[row * columns + col];
+        if (override != null && override != 1) continue;
         if ((col * 3 + row * 5) % 7 < 3 || col > 22) continue;
         final c = cellCenter(col, row);
         canvas.drawOval(
@@ -913,12 +1243,90 @@ class SettlementMap extends Component {
     }
   }
 
-  void _drawBuilding(Canvas canvas, _Building b) {
+  void _drawBuilding(Canvas canvas, _Building b, Set<int> roadKeys) {
     final c = cellCenter(b.column, b.row);
     if (b.kind == 7) {
-      canvas.drawOval(
-          Rect.fromCenter(center: Offset(c.x, c.y), width: 54, height: 16),
-          Paint()..color = const Color(0xff867a5e));
+      final road = Path()
+        ..moveTo(c.x, c.y - tileH / 2)
+        ..lineTo(c.x + tileW / 2, c.y)
+        ..lineTo(c.x, c.y + tileH / 2)
+        ..lineTo(c.x - tileW / 2, c.y)
+        ..close();
+      canvas.drawPath(road, Paint()..color = const Color(0x880d1714));
+      canvas.save();
+      canvas.translate(0, 2);
+      canvas.drawPath(road, Paint()..color = const Color(0xff69695f));
+      canvas.restore();
+      final centerLine = Paint()
+        ..color = const Color(0xffe1d1a3)
+        ..strokeWidth = 1.4
+        ..strokeCap = StrokeCap.round;
+      for (final (dc, dr, dx, dy) in const [
+        (1, 0, 34.0, 18.0),
+        (-1, 0, -34.0, -18.0),
+        (0, 1, -34.0, 18.0),
+        (0, -1, 34.0, -18.0),
+      ]) {
+        final nextColumn = b.column + dc, nextRow = b.row + dr;
+        final connected = nextColumn >= 0 &&
+            nextColumn < columns &&
+            nextRow >= 0 &&
+            nextRow < rows &&
+            roadKeys.contains(nextRow * columns + nextColumn);
+        if (connected) {
+          canvas.drawLine(
+              Offset(c.x, c.y), Offset(c.x + dx, c.y + dy), centerLine);
+        }
+      }
+      return;
+    }
+    if (b.kind == 8) {
+      canvas.drawLine(
+          Offset(c.x - 5, c.y + 3),
+          Offset(c.x + 28, c.y + 3),
+          Paint()
+            ..color = const Color(0xff8b6744)
+            ..strokeWidth = 6
+            ..strokeCap = StrokeCap.round);
+      for (var plank = 0; plank < 4; plank++) {
+        final x = c.x + plank * 7;
+        canvas.drawLine(
+            Offset(x, c.y - 2),
+            Offset(x, c.y + 8),
+            Paint()
+              ..color = const Color(0xffc49a62)
+              ..strokeWidth = 2);
+      }
+      canvas.drawLine(
+          Offset(c.x + 22, c.y - 4),
+          Offset(c.x + 22, c.y + 6),
+          Paint()
+            ..color = const Color(0xffe5d8a6)
+            ..strokeWidth = 2);
+      return;
+    }
+    if (b.kind == 11) {
+      canvas.drawLine(
+          Offset(c.x, c.y + 8),
+          Offset(c.x, c.y - 14),
+          Paint()
+            ..color = const Color(0xffd7d5c8)
+            ..strokeWidth = 2);
+      final sign = RRect.fromRectAndRadius(
+          Rect.fromLTWH(c.x - 10, c.y - 24, 20, 14), const Radius.circular(3));
+      canvas.drawRRect(sign, Paint()..color = const Color(0xff246b84));
+      canvas.drawRRect(
+          sign,
+          Paint()
+            ..color = const Color(0xffc7edf0)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1);
+      canvas.drawRect(Rect.fromLTWH(c.x - 5, c.y - 21, 10, 4),
+          Paint()..color = const Color(0xfff2d778));
+      canvas.drawCircle(Offset(c.x - 5, c.y - 15), 1,
+          Paint()..color = const Color(0xffeaf7f7));
+      canvas.drawCircle(Offset(c.x + 5, c.y - 15), 1,
+          Paint()..color = const Color(0xffeaf7f7));
       return;
     }
     if (b.kind == 4) {
@@ -929,6 +1337,50 @@ class SettlementMap extends Component {
           Offset(c.x, c.y - 12), 8, Paint()..color = const Color(0xff3d7d43));
       return;
     }
+    if (b.kind == 1) {
+      final field = Path()
+        ..moveTo(c.x - 28, c.y + 7)
+        ..lineTo(c.x - 7, c.y - 4)
+        ..lineTo(c.x + 10, c.y + 5)
+        ..lineTo(c.x - 12, c.y + 17)
+        ..close();
+      canvas.drawPath(field, Paint()..color = const Color(0xff765532));
+      final cropColor = climate.seasonIndex == 3
+          ? const Color(0xff9a895d)
+          : climate.seasonIndex == 2
+              ? const Color(0xffd3b24e)
+              : const Color(0xff6e963e);
+      final crops = Paint()
+        ..color = cropColor
+        ..strokeWidth = 1.7;
+      for (var line = 0; line < 4; line++) {
+        final y = c.y + 3 + line * 3.1;
+        canvas.drawLine(Offset(c.x - 24 + line * 1.2, y),
+            Offset(c.x - 4 + line * 1.2, y - 10), crops);
+      }
+    }
+    if (b.kind == 9) {
+      for (var animal = 0; animal < 3; animal++) {
+        final point = Offset(c.x - 20 + animal * 8, c.y + 14);
+        canvas.drawOval(
+            Rect.fromCenter(center: point, width: 7, height: 5),
+            Paint()
+              ..color = animal.isEven
+                  ? const Color(0xffeee3c7)
+                  : const Color(0xff79553b));
+        canvas.drawCircle(point + const Offset(3, -1), 2,
+            Paint()..color = const Color(0xff2a2924));
+      }
+    }
+    if (b.kind == 10) {
+      for (var row = 0; row < 2; row++) {
+        for (var crate = 0; crate < 3; crate++) {
+          canvas.drawRect(
+              Rect.fromLTWH(c.x - 11 + crate * 8, c.y + 5 + row * 6, 6, 5),
+              Paint()..color = const Color(0xffb78242));
+        }
+      }
+    }
     final palette = [
       const Color(0xffe4d2a5),
       const Color(0xffc67e4b),
@@ -937,7 +1389,9 @@ class SettlementMap extends Component {
       const Color(0xffc1ad79),
       const Color(0xffbacbd0),
       const Color(0xffd3c19d),
-      const Color(0xff80785d)
+      const Color(0xff80785d),
+      const Color(0xff9a754d),
+      const Color(0xffb1874f),
     ];
     final base = palette[b.kind.clamp(0, palette.length - 1)];
     final shadow = Path()
@@ -968,7 +1422,12 @@ class SettlementMap extends Component {
       ..lineTo(c.x + 20, c.y - 15)
       ..lineTo(c.x, c.y - 5)
       ..close();
-    canvas.drawPath(roof, Paint()..color = const Color(0xff9d4937));
+    final roofColor = b.kind == 9
+        ? const Color(0xff76563a)
+        : b.kind == 10
+            ? const Color(0xff996333)
+            : const Color(0xff9d4937);
+    canvas.drawPath(roof, Paint()..color = roofColor);
     canvas.drawRect(Rect.fromLTWH(c.x - 3, c.y - 2, 6, 12),
         Paint()..color = const Color(0xff563d2b));
     canvas.drawRect(Rect.fromLTWH(c.x - 12, c.y - 8, 5, 5),
@@ -979,6 +1438,7 @@ class SettlementMap extends Component {
 
   void _drawPeople(Canvas canvas) {
     for (final person in people.residents) {
+      if (person.onBus) continue;
       final p = person.position;
       final bob = math.sin(person.walkPhase) * 1.5;
       final color = switch (person.personality) {
@@ -1117,7 +1577,11 @@ class _TopBar extends StatelessWidget {
                   onPressed: () =>
                       _showCivilizationPanel(context, game, 'Достижения')),
               _NavButton(Icons.public, 'Мир',
-                  onPressed: () => _showCivilizationPanel(context, game, 'Мир')),
+                  onPressed: () =>
+                      _showCivilizationPanel(context, game, 'Мир')),
+              _NavButton(Icons.history, 'Летопись',
+                  onPressed: () =>
+                      _showCivilizationPanel(context, game, 'Летопись')),
             ]),
           ],
         ]),
@@ -1242,6 +1706,10 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
       'Строительство' => <Widget>[
           _line('Построено зданий', '${map._buildings.length}'),
           _line('Стройматериалы', economy.materials.toStringAsFixed(1)),
+          _line('Пассажиры: ожидают · едут',
+              '${people.where((r) => r.activity == ResidentActivity.waitingAtBusStop).length} · ${people.where((r) => r.onBus).length}'),
+          _line('Совершено автобусных поездок',
+              '${people.fold<int>(0, (total, r) => total + r.transitTrips)}'),
           const SizedBox(height: 8),
           const Text(
               'Выберите инструмент в нижней панели и нажмите на свободную клетку карты.'),
@@ -1294,7 +1762,37 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
               setState(() {});
             },
           ),
+          const SizedBox(height: 5),
+          Text(
+              'Цена билета: ${economy.busTicketFare.toStringAsFixed(2)} монет'),
+          Slider(
+            value: economy.busTicketFare.clamp(0, 3),
+            min: 0,
+            max: 3,
+            divisions: 12,
+            label: economy.busTicketFare.toStringAsFixed(2),
+            onChanged: (value) {
+              economy.busTicketFare = value;
+              widget.game.refreshFromMap();
+              setState(() {});
+            },
+          ),
+          _line('Билеты проданы · выручка',
+              '${economy.ticketsSold} · ${economy.transitRevenue.toStringAsFixed(1)} монет'),
+          _line(
+              'Вместимость автобуса',
+              civ.civicBuildings.contains('Транспортное депо')
+                  ? '12 мест · депо построено'
+                  : '4 места · депо увеличит вместимость'),
           _line('Мировая торговля', '${civ.worldTradeVolume.floor()}'),
+          _line('Фермы · обрабатываемые поля',
+              '${map._buildings.where((b) => b.kind == 1).length} · ${map._buildings.where((b) => b.kind == 1).length * 4}'),
+          _line('Урожаи · плодородие почвы',
+              '${map.climate.nature['harvests']?.floor() ?? 0} · ${map.climate.nature['soil']?.round() ?? 0}%'),
+          _line('Рыба · мясо за производственный цикл',
+              '${economy.fishProduction.toStringAsFixed(1)} · ${economy.meatProduction.toStringAsFixed(1)}'),
+          _line('Склады · вместимость каждого ресурса',
+              '${map._buildings.where((b) => b.kind == 10).length} · ${economy.storageCapacity.floor()}'),
           _line('Открытые поселения', '${civ.foundedSettlements}'),
           _line('Переселения', '${civ.migrations}'),
         ],
@@ -1316,14 +1814,33 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
                 city.unlocked
                     ? 'казна ${city.treasury.floor()} · армия ${city.army.floor()}'
                     : 'откроется при ${city.populationThreshold} жителях'),
-          _line('Миграции', '${civ.migrations} · городам свой бюджет, запасы и оборона'),
+          _line('Миграции',
+              '${civ.migrations} · городам свой бюджет, запасы и оборона'),
           const Divider(),
           const Text('Соседние государства',
               style: TextStyle(fontWeight: FontWeight.w800)),
           for (final state in civ.foreignNations)
-            _line(
-                '${state.name} · ${state.population} жителей',
+            _line('${state.name} · ${state.population} жителей',
                 'казна ${state.treasury.floor()} · армия ${state.army} · связь ${state.relation.round()}%'),
+        ],
+      'Летопись' => <Widget>[
+          _line('Записей', '${civ.history.length}'),
+          _line('Текущий год · эпоха', '${civ.year} · ${civ.currentEra}'),
+          const Divider(),
+          if (civ.history.isEmpty)
+            const Text('События появятся по мере развития поселения.'),
+          for (final entry in civ.history.reversed.take(80))
+            ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: CircleAvatar(
+                radius: 17,
+                child:
+                    Text('${entry.year}', style: const TextStyle(fontSize: 10)),
+              ),
+              title: Text(entry.text),
+              subtitle: Text(entry.category),
+            ),
         ],
       'Население' => <Widget>[
           _line('Жителей', '${people.length}'),
@@ -1380,10 +1897,16 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
           _line('Раскрыто', '${civ.crimesResolved}'),
           _line('Пожары', '${civ.fireIncidents}'),
           _line('Предотвращено возгораний', '${civ.firesPrevented}'),
-          _line('Полиция',
-              civ.civicBuildings.contains('Полицейский участок') ? 'участок открыт' : 'нет участка'),
-          _line('Пожарная часть',
-              civ.civicBuildings.contains('Пожарная часть') ? 'служба работает' : 'нет службы'),
+          _line(
+              'Полиция',
+              civ.civicBuildings.contains('Полицейский участок')
+                  ? 'участок открыт'
+                  : 'нет участка'),
+          _line(
+              'Пожарная часть',
+              civ.civicBuildings.contains('Пожарная часть')
+                  ? 'служба работает'
+                  : 'нет службы'),
         ],
       'Культура' => <Widget>[
           _line('Культурный уровень', '${civ.cultureLevel} / 10'),
@@ -1713,13 +2236,17 @@ class _BuildBar extends StatelessWidget {
   final ValueChanged<int> onSelect;
   static const items = [
     (Icons.home_work, 'Жилые дома'),
-    (Icons.factory, 'Производство'),
+    (Icons.agriculture, 'Фермы'),
     (Icons.storefront, 'Торговля'),
     (Icons.add_road, 'Инфраструктура'),
     (Icons.park, 'Парки и отдых'),
     (Icons.shield, 'Службы'),
     (Icons.account_balance, 'Уникальные здания'),
     (Icons.alt_route, 'Дороги'),
+    (Icons.set_meal, 'Рыболовство'),
+    (Icons.pets, 'Скот'),
+    (Icons.warehouse, 'Склады'),
+    (Icons.directions_bus, 'Остановки'),
   ];
   @override
   Widget build(BuildContext context) => _GlassPanel(
@@ -1769,8 +2296,20 @@ class _BuildBar extends StatelessWidget {
               ),
             ),
           const SizedBox(width: 4),
-          const Icon(Icons.pause_circle_filled,
-              color: Color(0xffffd05c), size: 28),
+          PopupMenuButton<int>(
+            tooltip: 'Редактор карты',
+            icon: Icon(Icons.layers,
+                color: selected >= 12 ? const Color(0xffffd05c) : Colors.white,
+                size: 25),
+            onSelected: (terrain) => onSelect(12 + terrain),
+            itemBuilder: (context) => const [
+              PopupMenuItem(value: 0, child: Text('🌱 Луг')),
+              PopupMenuItem(value: 1, child: Text('🌲 Лес')),
+              PopupMenuItem(value: 2, child: Text('🌊 Вода')),
+              PopupMenuItem(value: 3, child: Text('⛰️ Холм')),
+              PopupMenuItem(value: 4, child: Text('↩️ Исходный ландшафт')),
+            ],
+          ),
         ]),
       );
 }
@@ -1845,9 +2384,8 @@ class _WorldMapPainter extends CustomPainter {
         Rect.fromCenter(
             center: Offset(x, y), width: 9 + i % 5 * 5, height: 5 + i % 4 * 3),
         Paint()
-          ..color = i.isEven
-              ? const Color(0x2234442b)
-              : const Color(0x22e2cf8a),
+          ..color =
+              i.isEven ? const Color(0x2234442b) : const Color(0x22e2cf8a),
       );
     }
     final river = Path()
@@ -1878,10 +2416,10 @@ class _WorldMapPainter extends CustomPainter {
       ..strokeWidth = 3
       ..strokeCap = StrokeCap.round;
     for (var i = 1; i < openCities.length; i++) {
-      final a = Offset(openCities[i - 1].x * size.width,
-          openCities[i - 1].y * size.height);
-      final b = Offset(openCities[i].x * size.width,
-          openCities[i].y * size.height);
+      final a = Offset(
+          openCities[i - 1].x * size.width, openCities[i - 1].y * size.height);
+      final b =
+          Offset(openCities[i].x * size.width, openCities[i].y * size.height);
       canvas.drawLine(a, b, road);
       canvas.drawLine(
           a,
@@ -1898,12 +2436,8 @@ class _WorldMapPainter extends CustomPainter {
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1.4;
         for (var segment = 0; segment < 8; segment++) {
-          canvas.drawArc(
-              Rect.fromCircle(center: center, radius: 8),
-              segment * math.pi / 4,
-              math.pi / 8,
-              false,
-              outline);
+          canvas.drawArc(Rect.fromCircle(center: center, radius: 8),
+              segment * math.pi / 4, math.pi / 8, false, outline);
         }
         continue;
       }
@@ -1911,8 +2445,12 @@ class _WorldMapPainter extends CustomPainter {
       final radius = capital ? 11.0 : 8.0;
       canvas.drawCircle(center + const Offset(0, 2), radius + 2,
           Paint()..color = const Color(0x660f2119));
-      canvas.drawCircle(center, radius,
-          Paint()..color = capital ? const Color(0xffffd05c) : const Color(0xffe9ead4));
+      canvas.drawCircle(
+          center,
+          radius,
+          Paint()
+            ..color =
+                capital ? const Color(0xffffd05c) : const Color(0xffe9ead4));
       canvas.drawCircle(
           center,
           radius,
@@ -1925,8 +2463,7 @@ class _WorldMapPainter extends CustomPainter {
               center: center.translate(-2, -1), width: 4, height: 6),
           Paint()..color = const Color(0xff557c68));
       canvas.drawRect(
-          Rect.fromCenter(
-              center: center.translate(3, -2), width: 4, height: 8),
+          Rect.fromCenter(center: center.translate(3, -2), width: 4, height: 8),
           Paint()..color = const Color(0xff8aa181));
       final label = TextPainter(
         text: TextSpan(

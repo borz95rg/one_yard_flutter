@@ -5,6 +5,8 @@ import 'resident_simulation.dart';
 class MarketState {
   MarketState({
     this.food = 45,
+    this.fishStock = 0,
+    this.meatStock = 0,
     this.materials = 28,
     this.goods = 18,
     this.tradeVolume = 0,
@@ -13,9 +15,13 @@ class MarketState {
     this.goodsPrice = 4,
     this.treasury = 0,
     this.taxRate = 0.08,
+    this.storageCapacity = 9999,
+    this.busTicketFare = .75,
   });
 
   double food;
+  double fishStock;
+  double meatStock;
   double materials;
   double goods;
   double tradeVolume;
@@ -24,10 +30,20 @@ class MarketState {
   double goodsPrice;
   double treasury;
   double taxRate;
+  double storageCapacity;
+  double busTicketFare;
+  double transitRevenue = 0;
+  int ticketsSold = 0;
+  double fishProduction = 0;
+  double meatProduction = 0;
   double _timer = 0;
+
+  double get availableFood => food + fishStock + meatStock;
 
   EconomyMetrics get metrics => EconomyMetrics(
         food: food,
+        fish: fishStock,
+        meat: meatStock,
         materials: materials,
         goods: goods,
         treasury: treasury,
@@ -37,6 +53,8 @@ class MarketState {
 
   Map<String, dynamic> toJson() => {
         'food': food,
+        'fishStock': fishStock,
+        'meatStock': meatStock,
         'materials': materials,
         'goods': goods,
         'tradeVolume': tradeVolume,
@@ -45,11 +63,19 @@ class MarketState {
         'goodsPrice': goodsPrice,
         'treasury': treasury,
         'taxRate': taxRate,
+        'storageCapacity': storageCapacity,
+        'busTicketFare': busTicketFare,
+        'transitRevenue': transitRevenue,
+        'ticketsSold': ticketsSold,
+        'fishProduction': fishProduction,
+        'meatProduction': meatProduction,
         'timer': _timer,
       };
 
   factory MarketState.fromJson(Map<String, dynamic> data) => MarketState(
         food: _read(data, 'food', 45),
+        fishStock: _read(data, 'fishStock', 0),
+        meatStock: _read(data, 'meatStock', 0),
         materials: _read(data, 'materials', 28),
         goods: _read(data, 'goods', 18),
         tradeVolume: _read(data, 'tradeVolume', 0),
@@ -58,7 +84,23 @@ class MarketState {
         goodsPrice: _read(data, 'goodsPrice', 4),
         treasury: _read(data, 'treasury', 0),
         taxRate: _read(data, 'taxRate', .08).clamp(0, .5).toDouble(),
-      ).._timer = _read(data, 'timer', 0).clamp(0, 10).toDouble();
+        storageCapacity: _read(data, 'storageCapacity', 9999),
+        busTicketFare: _read(data, 'busTicketFare', .75).clamp(0, 3).toDouble(),
+      )
+        ..fishProduction = _read(data, 'fishProduction', 0)
+        ..meatProduction = _read(data, 'meatProduction', 0)
+        ..transitRevenue = _read(data, 'transitRevenue', 0)
+        ..ticketsSold = _read(data, 'ticketsSold', 0).floor().clamp(0, 1 << 31)
+        .._timer = _read(data, 'timer', 0).clamp(0, 10).toDouble();
+
+  bool collectTransitFare(ResidentAgent resident) {
+    if (busTicketFare > 0 && resident.wallet < busTicketFare) return false;
+    resident.wallet = max(0, resident.wallet - busTicketFare);
+    treasury += busTicketFare;
+    transitRevenue += busTicketFare;
+    ticketsSold++;
+    return true;
+  }
 
   /// Ports updateMarketEconomy() in the HTML source as a ten-second market
   /// step. Site roles supply the starting production and trade buildings.
@@ -68,34 +110,56 @@ class MarketState {
     required List<ResidentSite> sites,
     int technologyLevel = 1,
     int eraIndex = 0,
+    int warehouses = 0,
   }) {
     if (!dt.isFinite || dt < 0) throw ArgumentError.value(dt, 'dt');
+    storageCapacity = 9999 + max(0, warehouses) * 1000;
     _timer += dt;
     if (_timer < 10) return const [];
     _timer %= 10;
 
-    _assignJobs(residents);
+    _assignJobs(residents, sites);
     final adults = residents.where((r) => r.age >= 42 && r.age < 620).toList();
     final farmers = adults.where((r) => r.job == 'Фермер').length;
     final builders = adults.where((r) => r.job == 'Строитель').length;
     final traders = adults.where((r) => r.job == 'Торговец').length;
     final artisans = adults.where((r) => r.job == 'Ремесленник').length;
     final techBonus = 1 + (technologyLevel - 1) * 0.055 + eraIndex * 0.035;
+    final fishers = adults.where((r) => r.job == 'Рыбак').length;
+    final herders = adults.where((r) => r.job == 'Скотник').length;
+    fishProduction = min(fishers,
+            sites.where((s) => s.role == 'рыболовство' && !s.disabled).length) *
+        .7;
+    meatProduction = min(
+            herders,
+            sites
+                .where((s) => s.role == 'животноводство' && !s.disabled)
+                .length) *
+        .9;
     final foodMade = (farmers * 1.8 + adults.length * 0.08) * techBonus;
     final materialsMade = builders * 1.15 * techBonus;
     final goodsMade = (artisans * 1.1 + traders * 0.35) * techBonus;
-    final foodUsed = residents.length * 0.34;
-    food = _clamp(food + foodMade - foodUsed, 0, 9999);
-    materials = _clamp(materials + materialsMade, 0, 9999);
-    goods = _clamp(goods + goodsMade, 0, 9999);
+    fishStock = _clamp(fishStock + fishProduction * techBonus, 0, storageCapacity);
+    meatStock = _clamp(meatStock + meatProduction * techBonus, 0, storageCapacity);
+    var foodUsed = residents.length * 0.34;
+    food = _clamp(food + foodMade - foodUsed, 0, storageCapacity);
+    final eatenFromStaples = min(food, foodUsed);
+    food -= eatenFromStaples;
+    foodUsed -= eatenFromStaples;
+    final eatenFish = min(fishStock, foodUsed);
+    fishStock -= eatenFish;
+    foodUsed -= eatenFish;
+    meatStock = max(0, meatStock - foodUsed);
+    materials = _clamp(materials + materialsMade, 0, storageCapacity);
+    goods = _clamp(goods + goodsMade, 0, storageCapacity);
 
     final marketBuildings =
         sites.where((s) => s.role == 'рынок' && !s.disabled).length;
     final tradingPower = max(1, traders + marketBuildings * 2);
     var revenue = 0.0;
-    if (food > 18) {
-      final sold = min(food - 12, tradingPower * 0.7);
-      food -= sold;
+    if (availableFood > 18) {
+      final sold = min(availableFood - 12, tradingPower * 0.7);
+      _removeFood(sold);
       revenue += sold * foodPrice;
       tradeVolume += sold;
     }
@@ -117,14 +181,14 @@ class MarketState {
     final upkeep = sites.length * 0.12 + residents.length * 0.025;
     treasury = max(0, treasury + revenue * 0.16 + taxIncome - upkeep);
 
-    if (food < 3) {
+    if (availableFood < 3) {
       for (final resident in residents) {
         resident.happiness = max(0.05, resident.happiness - 0.025);
         resident.morale = max(0.1, resident.morale - 0.015);
       }
       return ['Нехватка продовольствия: запасы и настроение жителей падают'];
     }
-    if (food > 25) {
+    if (availableFood > 25) {
       for (final resident in residents) {
         resident.happiness = min(1, resident.happiness + 0.004);
       }
@@ -135,7 +199,19 @@ class MarketState {
     return const [];
   }
 
-  static void _assignJobs(List<ResidentAgent> residents) {
+  void _removeFood(double amount) {
+    var remaining = amount;
+    final fromStaples = min(food, remaining);
+    food -= fromStaples;
+    remaining -= fromStaples;
+    final fromFish = min(fishStock, remaining);
+    fishStock -= fromFish;
+    remaining -= fromFish;
+    meatStock = max(0, meatStock - remaining);
+  }
+
+  static void _assignJobs(
+      List<ResidentAgent> residents, List<ResidentSite> sites) {
     for (final resident in residents) {
       if (resident.age < 42) {
         resident.job = resident.age < 18 ? 'Малыш' : 'Ученик';
@@ -158,6 +234,20 @@ class MarketState {
         };
       }
     }
+    final available = residents
+        .where((r) => r.age >= 42 && r.age < 620 && r.education < 58)
+        .toList();
+    var workerIndex = 0;
+    final fisheryCount =
+        sites.where((s) => s.role == 'рыболовство' && !s.disabled).length;
+    for (var i = 0; i < fisheryCount && workerIndex < available.length; i++) {
+      available[workerIndex++].job = 'Рыбак';
+    }
+    final livestockCount =
+        sites.where((s) => s.role == 'животноводство' && !s.disabled).length;
+    for (var i = 0; i < livestockCount && workerIndex < available.length; i++) {
+      available[workerIndex++].job = 'Скотник';
+    }
   }
 
   static double _clamp(double value, double low, double high) =>
@@ -174,6 +264,8 @@ double _read(Map<String, dynamic> map, String key, double fallback) {
 class EconomyMetrics {
   const EconomyMetrics({
     required this.food,
+    required this.fish,
+    required this.meat,
     required this.materials,
     required this.goods,
     required this.treasury,
@@ -182,6 +274,8 @@ class EconomyMetrics {
   });
 
   final double food;
+  final double fish;
+  final double meat;
   final double materials;
   final double goods;
   final double treasury;
