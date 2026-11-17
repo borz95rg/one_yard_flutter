@@ -34,4 +34,29 @@ void main() {
 
     expect(restored.goodsStorageCapacity, 321);
   });
+
+  test('storage share changes keep the total capacity and persist', () {
+    final market = MarketState();
+    market.update(
+      dt: 0,
+      residents: const [],
+      sites: const [],
+      warehouses: 1,
+    );
+
+    market.setStorageShare(StoredResource.fish, .3);
+
+    expect(market.fishStorageCapacity, 225);
+    expect(market.storageCapacity, 750);
+    expect(
+      market.foodStorageShare +
+          market.fishStorageShare +
+          market.meatStorageShare +
+          market.materialStorageShare +
+          market.goodsStorageShare,
+      closeTo(1, 1e-9),
+    );
+    final restored = MarketState.fromJson(market.toJson());
+    expect(restored.fishStorageShare, closeTo(.3, 1e-9));
+  });
 }

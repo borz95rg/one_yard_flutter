@@ -1969,6 +1969,66 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
         ),
       );
 
+  void _configureStorage(MarketState market) {
+    const resources = [
+      (StoredResource.food, 'Еда'),
+      (StoredResource.fish, 'Рыба'),
+      (StoredResource.meat, 'Мясо'),
+      (StoredResource.materials, 'Материалы'),
+      (StoredResource.goods, 'Товары'),
+    ];
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Доли складских ёмкостей'),
+          content: SizedBox(
+            width: 380,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'Меняйте приоритеты хранения. Общий объём складов останется прежним.',
+                  ),
+                  for (final (resource, label) in resources)
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '$label · ${(market.storageShare(resource) * 100).round()}%',
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        Slider(
+                          value: market.storageShare(resource).clamp(.01, .8),
+                          min: .01,
+                          max: .8,
+                          divisions: 16,
+                          label:
+                              '${(market.storageShare(resource) * 100).round()}%',
+                          onChanged: (value) {
+                            setDialogState(
+                                () => market.setStorageShare(resource, value));
+                            widget.game.refreshFromMap();
+                          },
+                        ),
+                      ],
+                    ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Готово'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (!widget.game.isLoaded) {
@@ -2090,6 +2150,8 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
               '${economy.food.floor()}/${economy.foodStorageCapacity.floor()} · ${economy.fishStock.floor()}/${economy.fishStorageCapacity.floor()} · ${economy.meatStock.floor()}/${economy.meatStorageCapacity.floor()}'),
           _line('Материалы · товары',
               '${economy.materials.floor()}/${economy.materialStorageCapacity.floor()} · ${economy.goods.floor()}/${economy.goodsStorageCapacity.floor()}'),
+          _action('Настроить доли складских ёмкостей',
+              () => _configureStorage(economy)),
           _line('Открытые поселения', '${civ.foundedSettlements}'),
           _line('Переселения', '${civ.migrations}'),
         ],
