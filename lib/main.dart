@@ -167,6 +167,8 @@ class SettlementGame extends FlameGame {
   final ValueNotifier<EconomyMetrics> economy = ValueNotifier(
     const EconomyMetrics(
         food: 45,
+        fish: 0,
+        meat: 0,
         materials: 28,
         goods: 18,
         treasury: 0,
@@ -200,6 +202,9 @@ class SettlementGame extends FlameGame {
     } catch (_) {
       // The scene remains playable on platforms without app-private storage.
     }
+    // The image is registered at assets/city_map_crop.jpg, not in Flame's
+    // default assets/images/ directory.
+    images.prefix = 'assets/';
     map = SettlementMap(artwork: await images.load('city_map_crop.jpg'));
     final previous = await _saveRepository?.load();
     if (previous != null) {
