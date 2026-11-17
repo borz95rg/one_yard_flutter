@@ -208,7 +208,9 @@ class SettlementGame extends FlameGame {
     try {
       artwork = await images.load('city_map_crop.jpg');
     } catch (_) {
-      events.value = ['Подложка карты не загрузилась: включён базовый ландшафт'];
+      events.value = [
+        'Подложка карты не загрузилась: включён базовый ландшафт'
+      ];
     }
     map = SettlementMap(artwork: artwork);
     final previous = await _saveRepository?.load();
@@ -441,7 +443,6 @@ class SettlementMap extends Component {
 
   double get _busProgress => BusSchedule.routeProgressAt(_timeOfDay * 24);
 
-
   void restore(GameSave save) {
     final legacy = save.legacyHtmlSave;
     legacyHtmlSave = legacy;
@@ -669,11 +670,16 @@ class SettlementMap extends Component {
       final changedElevation = _elevationOverrides.remove(key) != null;
       final changedDistrict = _districtOverrides.remove(key) != null;
       final changedRiver = _riverCells.remove(key);
-      final changed = changedTerrain || changedElevation || changedDistrict || changedRiver;
-      if (changed) recentEvents.insert(0, 'Клетка карты возвращена к исходному ландшафту');
+      final changed =
+          changedTerrain || changedElevation || changedDistrict || changedRiver;
+      if (changed) {
+        recentEvents.insert(0, 'Клетка карты возвращена к исходному ландшафту');
+      }
     } else {
       if (terrain == 5) {
-        if (_riverCells.add(key)) recentEvents.insert(0, 'Добавлен участок русла реки');
+        if (_riverCells.add(key)) {
+          recentEvents.insert(0, 'Добавлен участок русла реки');
+        }
       } else if (terrain >= 6 && terrain <= 8) {
         final height = terrain - 5;
         if (_elevationOverrides[key] != height) {
@@ -753,9 +759,15 @@ class SettlementMap extends Component {
           : route.points
               .map((point) => IsometricPoint(point.dx, point.dy))
               .toList(),
-      busCapacity:
-          civilization.civicBuildings.contains('Транспортное депо') ? 12 : 4,
+      // A depot dispatches three buses with four seats each.
+      busCapacity: 4,
       onBusBoard: market.collectTransitFare,
+      busFleetProgresses: BusSchedule.fleetProgressesAt(
+        _timeOfDay * 24,
+        fleetSize: BusSchedule.fleetSize(
+          hasDepot: civilization.civicBuildings.contains('Транспортное депо'),
+        ),
+      ),
     );
     market.update(
       dt: dt,
@@ -932,30 +944,28 @@ class SettlementMap extends Component {
     ];
     const artWidth = 1195.0, artHeight = 600.0;
     for (var i = 0; i < count; i++) {
-      final bus =
-          busRoutePoints.length > 1 ? i == 0 : stage > .68 && i % 7 == 0;
-      final usesBusStops = bus && busRoutePoints.length > 1;
-      final usesPlayerRoads = !usesBusStops &&
-          (commuterRoutes.isNotEmpty || fallbackRoadPoints.length > 1);
-      final route = usesBusStops
-          ? busRoutePoints
-          : usesPlayerRoads
-              ? commuterRoutes.isNotEmpty
-                  ? commuterRoutes[i % commuterRoutes.length]
-                  : fallbackRoadPoints
-              : _demoTrafficRoutes[i % _demoTrafficRoutes.length];
-      final followsArtwork = !usesBusStops && !usesPlayerRoads;
+      final usesPlayerRoads =
+          commuterRoutes.isNotEmpty || fallbackRoadPoints.length > 1;
+      final route = usesPlayerRoads
+          ? commuterRoutes.isNotEmpty
+              ? commuterRoutes[i % commuterRoutes.length]
+              : fallbackRoadPoints
+          : _demoTrafficRoutes[i % _demoTrafficRoutes.length];
+      final followsArtwork = !usesPlayerRoads;
       final direction = i.isEven ? 1.0 : -1.0;
       final cycle = (_timeOfDay * 24 * 2.4 * direction + i * 1.73) % 18;
       final progress = ((cycle + 18) % 18) / 18;
       final sample = _sampleRoute(route, progress);
-      final x = followsArtwork ? (sample.$1.dx / artWidth - .5) * 1768 : sample.$1.dx;
-      final y = followsArtwork ? (sample.$1.dy / artHeight - .5) * 936 : sample.$1.dy;
-      final tangentX = followsArtwork ? sample.$2.dx * 1768 / artWidth : sample.$2.dx;
-      final tangentY = followsArtwork ? sample.$2.dy * 936 / artHeight : sample.$2.dy;
+      final x =
+          followsArtwork ? (sample.$1.dx / artWidth - .5) * 1768 : sample.$1.dx;
+      final y =
+          followsArtwork ? (sample.$1.dy / artHeight - .5) * 936 : sample.$1.dy;
+      final tangentX =
+          followsArtwork ? sample.$2.dx * 1768 / artWidth : sample.$2.dx;
+      final tangentY =
+          followsArtwork ? sample.$2.dy * 936 / artHeight : sample.$2.dy;
       final angle = math.atan2(tangentY, tangentX);
-      final length = bus ? 28.0 : 17.0;
-      final height = bus ? 9.0 : 7.0;
+      const length = 17.0, height = 7.0;
       canvas.save();
       canvas.translate(x, y);
       canvas.rotate(angle);
@@ -971,14 +981,14 @@ class SettlementMap extends Component {
       canvas.drawRRect(
         body,
         Paint()
-          ..color = bus ? const Color(0xffd3a84c) : colors[i % colors.length]
+          ..color = colors[i % colors.length]
           ..style = PaintingStyle.fill,
       );
       canvas.drawRRect(
         RRect.fromRectAndRadius(
           Rect.fromCenter(
-            center: Offset(bus ? -1 : 0, -1),
-            width: bus ? 16 : 8,
+            center: const Offset(0, -1),
+            width: 8,
             height: 3,
           ),
           const Radius.circular(1),
@@ -988,15 +998,42 @@ class SettlementMap extends Component {
       final lamp = Paint()..color = const Color(0xffffe6a3);
       canvas.drawCircle(Offset(length / 2 - 1, -1.5), .8, lamp);
       canvas.drawCircle(Offset(length / 2 - 1, 1.5), .8, lamp);
-      if (bus) {
-        final riders =
-            people.residents.where((resident) => resident.onBus).length;
-        for (var rider = 0; rider < math.min(5, riders); rider++) {
-          canvas.drawCircle(Offset(-5 + rider * 2.5, -1), 1,
-              Paint()..color = const Color(0xffffe5ae));
-        }
-      }
       canvas.restore();
+    }
+    if (busRoutePoints.length > 1) {
+      final hour = _timeOfDay * 24;
+      final fleet = BusSchedule.fleetProgressesAt(
+        hour,
+        fleetSize: BusSchedule.fleetSize(
+          hasDepot: civilization.civicBuildings.contains('Транспортное депо'),
+        ),
+      );
+      for (var vehicleId = 0; vehicleId < fleet.length; vehicleId++) {
+        final sample = _sampleRoute(busRoutePoints, fleet[vehicleId]);
+        final angle = math.atan2(sample.$2.dy, sample.$2.dx);
+        canvas.save();
+        canvas.translate(sample.$1.dx, sample.$1.dy);
+        canvas.rotate(angle);
+        const length = 28.0, height = 9.0;
+        final body = RRect.fromRectAndRadius(
+          Rect.fromCenter(center: Offset.zero, width: length, height: height),
+          const Radius.circular(2),
+        );
+        canvas.drawOval(
+          Rect.fromCenter(
+              center: const Offset(1, 4), width: length + 3, height: 7),
+          Paint()..color = const Color(0x880b1314),
+        );
+        canvas.drawRRect(body, Paint()..color = const Color(0xffd3a84c));
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+            Rect.fromCenter(center: const Offset(-1, -1), width: 16, height: 3),
+            const Radius.circular(1),
+          ),
+          Paint()..color = const Color(0xffb7d3d8),
+        );
+        canvas.restore();
+      }
     }
   }
 
@@ -1117,8 +1154,8 @@ class SettlementMap extends Component {
     }
 
     final homes = _buildings.where((building) => building.kind == 0);
-    final workplaces = _buildings.where((building) =>
-        const {1, 2, 3, 5, 6, 8, 9, 10}.contains(building.kind));
+    final workplaces = _buildings.where(
+        (building) => const {1, 2, 3, 5, 6, 8, 9, 10}.contains(building.kind));
     final routes = <List<Offset>>[];
     for (final home in homes) {
       final homeRoad = roadAtBuilding(home);
@@ -1339,10 +1376,13 @@ class SettlementMap extends Component {
         if (nextColumn >= columns || nextRow >= rows) continue;
         if (!_riverCells.contains(nextRow * columns + nextColumn)) continue;
         final next = cellCenter(nextColumn, nextRow);
-        canvas.drawLine(Offset(center.x, center.y), Offset(next.x, next.y), waterEdge);
-        canvas.drawLine(Offset(center.x, center.y), Offset(next.x, next.y), water);
+        canvas.drawLine(
+            Offset(center.x, center.y), Offset(next.x, next.y), waterEdge);
+        canvas.drawLine(
+            Offset(center.x, center.y), Offset(next.x, next.y), water);
       }
-      canvas.drawCircle(Offset(center.x, center.y), 6, Paint()..color = water.color);
+      canvas.drawCircle(
+          Offset(center.x, center.y), 6, Paint()..color = water.color);
     }
   }
 
@@ -1371,7 +1411,8 @@ class SettlementMap extends Component {
               ..strokeWidth = 1.5);
       }
       final peak = Offset(center.x, center.y - 3.0 * entry.value);
-      canvas.drawCircle(peak, 2.5 + entry.value, Paint()..color = contourColors[entry.value - 1]);
+      canvas.drawCircle(peak, 2.5 + entry.value,
+          Paint()..color = contourColors[entry.value - 1]);
     }
   }
 
@@ -2028,8 +2069,8 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
           _line(
               'Вместимость автобуса',
               civ.civicBuildings.contains('Транспортное депо')
-                  ? '12 мест · депо построено'
-                  : '4 места · депо увеличит вместимость'),
+                  ? '3 автобуса · 12 мест суммарно'
+                  : '1 автобус · 4 места'),
           _line(
               'Расписание автобусов',
               BusSchedule.isOperatingAt(map._timeOfDay * 24)

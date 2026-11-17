@@ -97,6 +97,7 @@ class ResidentAgent {
   bool onBus = false;
   int? busOriginStopId;
   int? busDestinationStopId;
+  int? busVehicleId;
   int transitTrips = 0;
   bool onShift = false;
   bool travelingToWork = false;
@@ -145,6 +146,7 @@ class ResidentAgent {
         'onBus': onBus,
         'busOriginStopId': busOriginStopId,
         'busDestinationStopId': busDestinationStopId,
+        'busVehicleId': busVehicleId,
         'transitTrips': transitTrips,
         'friendIds': friendIds,
         'rivalIds': rivalIds,
@@ -203,6 +205,7 @@ class ResidentAgent {
       ..onBus = data['onBus'] == true
       ..busOriginStopId = _optionalInteger(data['busOriginStopId'])
       ..busDestinationStopId = _optionalInteger(data['busDestinationStopId'])
+      ..busVehicleId = _optionalInteger(data['busVehicleId'])
       ..transitTrips = _integer(data['transitTrips'], 0).clamp(0, 1 << 31);
     agent.friendIds.addAll(_integerList(data['friendIds']));
     agent.rivalIds.addAll(_integerList(data['rivalIds']));
@@ -382,7 +385,7 @@ class ResidentSimulation {
   final double width, height;
   final Random _rng;
   double _socialTimer = 0, _familyTimer = 0;
-  double? _lastBusProgress;
+  final Map<int, double> _lastBusProgresses = {};
   int _nextId = 9;
 
   ResidentMetrics get metrics {
@@ -413,6 +416,7 @@ class ResidentSimulation {
     List<IsometricPoint> busRoutePoints = const [],
     int busCapacity = 4,
     bool Function(ResidentAgent)? onBusBoard,
+    List<double>? busFleetProgresses,
   }) {
     if (!dt.isFinite || dt < 0) throw ArgumentError.value(dt, 'dt');
     final shiftHours = hour >= 8 && hour < 18;
@@ -519,7 +523,12 @@ class ResidentSimulation {
     _updateSocial(dt);
     _updateFamilies(dt);
     _updateBusPassengers(
-        busProgress, busStopProgress, busRoutePoints, busCapacity, onBusBoard);
+      busFleetProgresses ?? [busProgress],
+      busStopProgress,
+      busRoutePoints,
+      busCapacity,
+      onBusBoard,
+    );
   }
 
   ResidentSite? _findTarget(ResidentAgent r) {
@@ -644,6 +653,7 @@ class ResidentSimulation {
     resident
       ..busOriginStopId = origin.mapId
       ..busDestinationStopId = destination.mapId
+      ..busVehicleId = null
       ..waitingForBus = true
       ..onBus = false
       ..target = origin
@@ -665,6 +675,7 @@ class ResidentSimulation {
       ..onBus = false
       ..busOriginStopId = null
       ..busDestinationStopId = null;
+    resident.busVehicleId = null;
     final home = resident.homePosition;
     if (home == null) {
       resident
@@ -684,15 +695,13 @@ class ResidentSimulation {
   }
 
   void _updateBusPassengers(
-      double progress,
+      List<double> fleetProgresses,
       Map<int, double> stopProgress,
       List<IsometricPoint> routePoints,
       int busCapacity,
       bool Function(ResidentAgent)? onBusBoard) {
-    final current = progress.clamp(0, 1).toDouble();
-    final previous = _lastBusProgress;
-    _lastBusProgress = current;
     if (stopProgress.isEmpty || routePoints.length < 2) {
+      _lastBusProgresses.clear();
       for (final resident in residents
           .where((resident) => resident.onBus || resident.waitingForBus)) {
         resident
@@ -700,71 +709,91 @@ class ResidentSimulation {
           ..waitingForBus = false
           ..busOriginStopId = null
           ..busDestinationStopId = null
+          ..busVehicleId = null
           ..activity = ResidentActivity.wandering
           ..target = null;
       }
       return;
     }
-    if (previous == null || previous == current) return;
-    bool crosses(double stop) => current > previous
-        ? stop > previous && stop <= current
-        : stop > previous || stop <= current;
-    double distanceFromPrevious(double stop) =>
-        stop >= previous ? stop - previous : stop + 1 - previous;
-    final arrivals = stopProgress.entries
-        .where((entry) => crosses(entry.value))
-        .toList()
-      ..sort((a, b) => distanceFromPrevious(a.value)
-          .compareTo(distanceFromPrevious(b.value)));
-    for (final arrival in arrivals) {
-      final stop = sites.where((site) => site.mapId == arrival.key).firstOrNull;
-      if (stop == null) continue;
-      for (final resident in residents) {
-        if (resident.onBus && resident.busDestinationStopId == arrival.key) {
-          resident
-            ..onBus = false
-            ..waitingForBus = false
-            ..position = stop.position
-            ..busOriginStopId = null
-            ..busDestinationStopId = null;
-          if (resident.travelingToWork) {
-            resident.target = resident.workSite ?? _findWorkplace(resident);
-            resident.activity = resident.target == null
-                ? ResidentActivity.wandering
-                : ResidentActivity.walking;
-          } else if (resident.returningHome && resident.homePosition != null) {
+    if (fleetProgresses.isEmpty) return; // The fleet is parked overnight.
+    final validVehicleIds = <int>{};
+    for (var vehicleId = 0; vehicleId < fleetProgresses.length; vehicleId++) {
+      validVehicleIds.add(vehicleId);
+      final current = fleetProgresses[vehicleId].clamp(0, 1).toDouble();
+      final previous = _lastBusProgresses[vehicleId];
+      _lastBusProgresses[vehicleId] = current;
+      if (previous == null || previous == current) continue;
+      bool crosses(double stop) => current > previous
+          ? stop > previous && stop <= current
+          : stop > previous || stop <= current;
+      double distanceFromPrevious(double stop) =>
+          stop >= previous ? stop - previous : stop + 1 - previous;
+      final arrivals = stopProgress.entries
+          .where((entry) => crosses(entry.value))
+          .toList()
+        ..sort((a, b) => distanceFromPrevious(a.value)
+            .compareTo(distanceFromPrevious(b.value)));
+      for (final arrival in arrivals) {
+        final stop =
+            sites.where((site) => site.mapId == arrival.key).firstOrNull;
+        if (stop == null) continue;
+        for (final resident in residents) {
+          if (resident.onBus &&
+              resident.busVehicleId == vehicleId &&
+              resident.busDestinationStopId == arrival.key) {
             resident
-              ..target = ResidentSite(resident.homePosition!, 'дом')
-              ..activity = ResidentActivity.walking;
-          } else {
-            resident
-              ..target = null
-              ..activity = ResidentActivity.wandering;
+              ..onBus = false
+              ..waitingForBus = false
+              ..position = stop.position
+              ..busOriginStopId = null
+              ..busDestinationStopId = null
+              ..busVehicleId = null;
+            if (resident.travelingToWork) {
+              resident.target = resident.workSite ?? _findWorkplace(resident);
+              resident.activity = resident.target == null
+                  ? ResidentActivity.wandering
+                  : ResidentActivity.walking;
+            } else if (resident.returningHome &&
+                resident.homePosition != null) {
+              resident
+                ..target = ResidentSite(resident.homePosition!, 'дом')
+                ..activity = ResidentActivity.walking;
+            } else {
+              resident
+                ..target = null
+                ..activity = ResidentActivity.wandering;
+            }
           }
         }
-      }
-      var occupancy = residents.where((resident) => resident.onBus).length;
-      for (final resident in residents) {
-        if (occupancy >= max(0, busCapacity)) break;
-        if (!resident.waitingForBus ||
-            resident.activity != ResidentActivity.waitingAtBusStop ||
-            resident.busOriginStopId != arrival.key) {
-          continue;
+        var occupancy = residents
+            .where((resident) =>
+                resident.onBus && resident.busVehicleId == vehicleId)
+            .length;
+        for (final resident in residents) {
+          if (occupancy >= max(0, busCapacity)) break;
+          if (!resident.waitingForBus ||
+              resident.activity != ResidentActivity.waitingAtBusStop ||
+              resident.busOriginStopId != arrival.key) {
+            continue;
+          }
+          if (onBusBoard != null && !onBusBoard(resident)) continue;
+          resident.transitTrips++;
+          resident
+            ..waitingForBus = false
+            ..onBus = true
+            ..busVehicleId = vehicleId
+            ..target = null
+            ..activity = ResidentActivity.ridingBus;
+          occupancy++;
         }
-        if (onBusBoard != null && !onBusBoard(resident)) continue;
-        resident.transitTrips++;
-        resident
-          ..waitingForBus = false
-          ..onBus = true
-          ..target = null
-          ..activity = ResidentActivity.ridingBus;
-        occupancy++;
+      }
+      final busPosition = _positionOnRoute(routePoints, current);
+      for (final resident in residents.where(
+          (resident) => resident.onBus && resident.busVehicleId == vehicleId)) {
+        resident.position = busPosition;
       }
     }
-    final busPosition = _positionOnRoute(routePoints, current);
-    for (final resident in residents.where((resident) => resident.onBus)) {
-      resident.position = busPosition;
-    }
+    _lastBusProgresses.removeWhere((id, _) => !validVehicleIds.contains(id));
   }
 
   static IsometricPoint _positionOnRoute(
@@ -1022,4 +1051,3 @@ int? _optionalInteger(Object? value) =>
 List<int> _integerList(Object? value) => value is List
     ? value.whereType<num>().map((number) => number.toInt()).toList()
     : const [];
-

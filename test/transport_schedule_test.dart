@@ -16,4 +16,14 @@ void main() {
     expect(BusSchedule.routeProgressAt(21.5), 0.75);
     expect(BusSchedule.routeProgressAt(23), 0);
   });
+
+  test('depot fleet is evenly spaced and parked outside service hours', () {
+    expect(BusSchedule.fleetSize(hasDepot: false), 1);
+    expect(BusSchedule.fleetSize(hasDepot: true), 3);
+    expect(
+      BusSchedule.fleetProgressesAt(6, fleetSize: 3),
+      [0, 1 / 3, 2 / 3],
+    );
+    expect(BusSchedule.fleetProgressesAt(22, fleetSize: 3), isEmpty);
+  });
 }
