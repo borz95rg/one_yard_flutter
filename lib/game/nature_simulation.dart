@@ -186,3 +186,4 @@ class NatureTickResult {
   final double residentMoraleDelta;
   final List<String> events;
 }
+

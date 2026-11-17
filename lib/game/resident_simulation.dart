@@ -1022,3 +1022,4 @@ int? _optionalInteger(Object? value) =>
 List<int> _integerList(Object? value) => value is List
     ? value.whereType<num>().map((number) => number.toInt()).toList()
     : const [];
+
