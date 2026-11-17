@@ -352,6 +352,9 @@ class SettlementMap extends Component {
     const _Building(21, 17, 1),
   ];
   final Map<int, int> _terrainOverrides = {};
+  final Map<int, int> _elevationOverrides = {};
+  final Map<int, int> _districtOverrides = {};
+  final Set<int> _riverCells = {};
   late ResidentSimulation people = ResidentSimulation.initial(
     sites: _defaultSites(),
     width: tileW * columns,
@@ -363,6 +366,8 @@ class SettlementMap extends Component {
   WorldState climate = WorldState.initial();
   _BusRoute? _cachedBusRoute;
   bool _busRouteDirty = true;
+  List<List<Offset>> _cachedTrafficRoutes = const [];
+  bool _trafficRoutesDirty = true;
   double _timeOfDay = .35;
   double _housingGrowthTimer = 0;
   final List<String> recentEvents = [];
@@ -406,6 +411,15 @@ class SettlementMap extends Component {
           for (final entry in _terrainOverrides.entries)
             '${entry.key}': entry.value,
         },
+        'elevations': {
+          for (final entry in _elevationOverrides.entries)
+            '${entry.key}': entry.value,
+        },
+        'districts': {
+          for (final entry in _districtOverrides.entries)
+            '${entry.key}': entry.value,
+        },
+        'riverCells': _riverCells.toList(growable: false),
       };
 
   _BusRoute? get _busRoute {
@@ -414,6 +428,14 @@ class SettlementMap extends Component {
       _busRouteDirty = false;
     }
     return _cachedBusRoute;
+  }
+
+  List<List<Offset>> get _trafficRoutes {
+    if (_trafficRoutesDirty) {
+      _cachedTrafficRoutes = _createTrafficRoutes();
+      _trafficRoutesDirty = false;
+    }
+    return _cachedTrafficRoutes;
   }
 
   double get _busProgress =>
@@ -439,6 +461,35 @@ class SettlementMap extends Component {
         }
       }
     }
+    void restoreCellTypes(Object? source, Map<int, int> target,
+        {required int minimum, required int maximum}) {
+      if (source is! Map) return;
+      target.clear();
+      for (final entry in source.entries) {
+        final key = int.tryParse('${entry.key}');
+        final type = entry.value;
+        if (key != null &&
+            key >= 0 &&
+            key < columns * rows &&
+            type is int &&
+            type >= minimum &&
+            type <= maximum) {
+          target[key] = type;
+        }
+      }
+    }
+
+    restoreCellTypes(payload['elevations'], _elevationOverrides,
+        minimum: 1, maximum: 3);
+    restoreCellTypes(payload['districts'], _districtOverrides,
+        minimum: 0, maximum: 3);
+    _riverCells
+      ..clear()
+      ..addAll((payload['riverCells'] is List
+              ? (payload['riverCells'] as List).whereType<num>()
+              : const <num>[])
+          .map((value) => value.toInt())
+          .where((key) => key >= 0 && key < columns * rows));
     final savedBuildings = payload['buildings'];
     if (savedBuildings is List) {
       final restored = <_Building>[];
@@ -465,6 +516,7 @@ class SettlementMap extends Component {
       }
     }
     _busRouteDirty = true;
+    _trafficRoutesDirty = true;
     final worldData = payload['worldState'];
     if (worldData is Map) {
       climate = WorldState.fromJson(Map<String, dynamic>.from(worldData));
@@ -582,8 +634,9 @@ class SettlementMap extends Component {
         _buildings.any((b) => b.column == cell.column && b.row == cell.row)) {
       return false;
     }
-    final terrain = _terrainOverrides[cell.row * columns + cell.column];
-    if (terrain == 2 || terrain == 3) return false;
+    final key = cell.row * columns + cell.column;
+    final terrain = _terrainOverrides[key];
+    if (terrain == 2 || terrain == 3 || _riverCells.contains(key)) return false;
     if (kind == 8 && cell.column < 20) return false;
     if (kind == 11 && !_hasAdjacentRoad(cell.column, cell.row)) return false;
     final costs = [8.0, 12, 15, 20, 7, 22, 30, 4, 18, 20, 16, 8];
@@ -593,6 +646,7 @@ class SettlementMap extends Component {
     }
     market.materials -= cost;
     _buildings.add(_Building(cell.column, cell.row, kind, visible: true));
+    _trafficRoutesDirty = true;
     people.sites.add(ResidentSite(
         cellCenter(cell.column, cell.row), _roleForKind(kind),
         mapId: cell.row * columns + cell.column));
@@ -604,19 +658,42 @@ class SettlementMap extends Component {
 
   bool paintTerrain(GridCell cell, int terrain) {
     if (terrain < 0 ||
-        terrain > 4 ||
+        terrain > 12 ||
         _buildings.any((b) => b.column == cell.column && b.row == cell.row)) {
       return false;
     }
     final key = cell.row * columns + cell.column;
     if (terrain == 4) {
-      if (_terrainOverrides.remove(key) == null) return true;
-      recentEvents.insert(0, 'Клетка карты возвращена к исходному ландшафту');
+      final changedTerrain = _terrainOverrides.remove(key) != null;
+      final changedElevation = _elevationOverrides.remove(key) != null;
+      final changedDistrict = _districtOverrides.remove(key) != null;
+      final changedRiver = _riverCells.remove(key);
+      final changed = changedTerrain || changedElevation || changedDistrict || changedRiver;
+      if (changed) recentEvents.insert(0, 'Клетка карты возвращена к исходному ландшафту');
     } else {
-      if (_terrainOverrides[key] == terrain) return true;
-      _terrainOverrides[key] = terrain;
-      final name = const ['луг', 'лес', 'вода', 'холм'][terrain];
-      recentEvents.insert(0, 'На карте создан участок: $name');
+      if (terrain == 5) {
+        if (_riverCells.add(key)) recentEvents.insert(0, 'Добавлен участок русла реки');
+      } else if (terrain >= 6 && terrain <= 8) {
+        final height = terrain - 5;
+        if (_elevationOverrides[key] != height) {
+          _elevationOverrides[key] = height;
+          _terrainOverrides.remove(key);
+          _riverCells.remove(key);
+          recentEvents.insert(0, 'Высота клетки изменена: уровень $height');
+        }
+      } else if (terrain >= 9) {
+        final district = terrain - 9;
+        if (_districtOverrides[key] != district) {
+          _districtOverrides[key] = district;
+          recentEvents.insert(0, 'Клетка назначена в район ${district + 1}');
+        }
+      } else if (_terrainOverrides[key] != terrain) {
+        _terrainOverrides[key] = terrain;
+        _elevationOverrides.remove(key);
+        _riverCells.remove(key);
+        final name = const ['луг', 'лес', 'вода', 'холм'][terrain];
+        recentEvents.insert(0, 'На карте создан участок: $name');
+      }
     }
     if (recentEvents.length > 8) {
       recentEvents.removeRange(8, recentEvents.length);
@@ -771,6 +848,9 @@ class SettlementMap extends Component {
       _drawRiver(canvas);
       _drawTrees(canvas);
     }
+    _drawRiverEdits(canvas);
+    _drawElevation(canvas);
+    _drawDistricts(canvas);
     final sorted = [..._buildings]
       ..sort((a, b) => (a.column + a.row).compareTo(b.column + b.row));
     final roadKeys = _buildings
@@ -785,7 +865,7 @@ class SettlementMap extends Component {
     canvas.restore();
   }
 
-  static const _trafficRoutes = <List<Offset>>[
+  static const _demoTrafficRoutes = <List<Offset>>[
     [
       Offset(0, 352),
       Offset(170, 350),
@@ -836,8 +916,8 @@ class SettlementMap extends Component {
     if (artwork == null || people.residents.length < 3) return;
     final stage = (people.residents.length / 70).clamp(0, 1).toDouble();
     final count = math.min(22, 2 + (stage * 20).floor());
-    final roadRoute = _connectedRoadRoute();
-    final playerRoadPoints = roadRoute
+    final commuterRoutes = _trafficRoutes;
+    final fallbackRoadPoints = _connectedRoadRoute()
         .map((building) => cellCenter(building.column, building.row))
         .map((point) => Offset(point.x, point.y))
         .toList(growable: false);
@@ -854,26 +934,24 @@ class SettlementMap extends Component {
       final bus =
           busRoutePoints.length > 1 ? i == 0 : stage > .68 && i % 7 == 0;
       final usesBusStops = bus && busRoutePoints.length > 1;
-      final usesPlayerRoads = !usesBusStops && playerRoadPoints.length > 1;
+      final usesPlayerRoads = !usesBusStops &&
+          (commuterRoutes.isNotEmpty || fallbackRoadPoints.length > 1);
       final route = usesBusStops
           ? busRoutePoints
           : usesPlayerRoads
-              ? playerRoadPoints
-              : _trafficRoutes[i % _trafficRoutes.length];
+              ? commuterRoutes.isNotEmpty
+                  ? commuterRoutes[i % commuterRoutes.length]
+                  : fallbackRoadPoints
+              : _demoTrafficRoutes[i % _demoTrafficRoutes.length];
+      final followsArtwork = !usesBusStops && !usesPlayerRoads;
       final direction = i.isEven ? 1.0 : -1.0;
       final cycle = (_timeOfDay * 24 * 2.4 * direction + i * 1.73) % 18;
       final progress = ((cycle + 18) % 18) / 18;
       final sample = _sampleRoute(route, progress);
-      final x = usesPlayerRoads
-          ? sample.$1.dx
-          : (sample.$1.dx / artWidth - .5) * 1768;
-      final y = usesPlayerRoads
-          ? sample.$1.dy
-          : (sample.$1.dy / artHeight - .5) * 936;
-      final tangentX =
-          usesPlayerRoads ? sample.$2.dx : sample.$2.dx * 1768 / artWidth;
-      final tangentY =
-          usesPlayerRoads ? sample.$2.dy : sample.$2.dy * 936 / artHeight;
+      final x = followsArtwork ? (sample.$1.dx / artWidth - .5) * 1768 : sample.$1.dx;
+      final y = followsArtwork ? (sample.$1.dy / artHeight - .5) * 936 : sample.$1.dy;
+      final tangentX = followsArtwork ? sample.$2.dx * 1768 / artWidth : sample.$2.dx;
+      final tangentY = followsArtwork ? sample.$2.dy * 936 / artHeight : sample.$2.dy;
       final angle = math.atan2(tangentY, tangentX);
       final length = bus ? 28.0 : 17.0;
       final height = bus ? 9.0 : 7.0;
@@ -986,6 +1064,85 @@ class SettlementMap extends Component {
       currentKey = previous[currentKey];
     }
     return route.reversed.toList(growable: false);
+  }
+
+  List<List<Offset>> _createTrafficRoutes() {
+    final roads = <int, _Building>{
+      for (final road in _buildings.where((building) => building.kind == 7))
+        road.row * columns + road.column: road,
+    };
+    if (roads.length < 2) return const [];
+
+    int? roadAtBuilding(_Building building) {
+      for (final (dc, dr) in const [(1, 0), (-1, 0), (0, 1), (0, -1)]) {
+        final column = building.column + dc, row = building.row + dr;
+        if (column < 0 || column >= columns || row < 0 || row >= rows) continue;
+        final key = row * columns + column;
+        if (roads.containsKey(key)) return key;
+      }
+      return null;
+    }
+
+    List<int> roadPath(int start, int destination) {
+      final queue = <int>[start];
+      final previous = <int, int?>{start: null};
+      for (var cursor = 0; cursor < queue.length; cursor++) {
+        final current = queue[cursor];
+        if (current == destination) break;
+        final row = current ~/ columns, column = current % columns;
+        for (final (dc, dr) in const [(1, 0), (-1, 0), (0, 1), (0, -1)]) {
+          final nextColumn = column + dc, nextRow = row + dr;
+          if (nextColumn < 0 ||
+              nextColumn >= columns ||
+              nextRow < 0 ||
+              nextRow >= rows) {
+            continue;
+          }
+          final next = nextRow * columns + nextColumn;
+          if (roads.containsKey(next) && !previous.containsKey(next)) {
+            previous[next] = current;
+            queue.add(next);
+          }
+        }
+      }
+      if (!previous.containsKey(destination)) return const [];
+      final path = <int>[];
+      int? current = destination;
+      while (current != null) {
+        path.add(current);
+        current = previous[current];
+      }
+      return path.reversed.toList(growable: false);
+    }
+
+    final homes = _buildings.where((building) => building.kind == 0);
+    final workplaces = _buildings.where((building) =>
+        const {1, 2, 3, 5, 6, 8, 9, 10}.contains(building.kind));
+    final routes = <List<Offset>>[];
+    for (final home in homes) {
+      final homeRoad = roadAtBuilding(home);
+      if (homeRoad == null) continue;
+      for (final workplace in workplaces) {
+        final workRoad = roadAtBuilding(workplace);
+        if (workRoad == null || workRoad == homeRoad) continue;
+        final path = roadPath(homeRoad, workRoad);
+        if (path.length < 2) continue;
+        final homeCenter = cellCenter(home.column, home.row);
+        final workCenter = cellCenter(workplace.column, workplace.row);
+        final points = <Offset>[
+          Offset(homeCenter.x, homeCenter.y),
+          for (final key in path)
+            Offset(cellCenter(roads[key]!.column, roads[key]!.row).x,
+                cellCenter(roads[key]!.column, roads[key]!.row).y),
+          Offset(workCenter.x, workCenter.y),
+        ];
+        routes
+          ..add(points)
+          ..add(points.reversed.toList(growable: false));
+        if (routes.length >= 12) return routes;
+      }
+    }
+    return routes;
   }
 
   _BusRoute? _createBusRoute() {
@@ -1161,6 +1318,85 @@ class SettlementMap extends Component {
                 ..strokeWidth = 1.5);
         }
       }
+    }
+  }
+
+  void _drawRiverEdits(Canvas canvas) {
+    final waterEdge = Paint()
+      ..color = const Color(0xaa317f91)
+      ..strokeWidth = 19
+      ..strokeCap = StrokeCap.round;
+    final water = Paint()
+      ..color = const Color(0xff56bfd0)
+      ..strokeWidth = 11
+      ..strokeCap = StrokeCap.round;
+    for (final key in _riverCells) {
+      final column = key % columns, row = key ~/ columns;
+      final center = cellCenter(column, row);
+      for (final (dc, dr) in const [(1, 0), (0, 1)]) {
+        final nextColumn = column + dc, nextRow = row + dr;
+        if (nextColumn >= columns || nextRow >= rows) continue;
+        if (!_riverCells.contains(nextRow * columns + nextColumn)) continue;
+        final next = cellCenter(nextColumn, nextRow);
+        canvas.drawLine(Offset(center.x, center.y), Offset(next.x, next.y), waterEdge);
+        canvas.drawLine(Offset(center.x, center.y), Offset(next.x, next.y), water);
+      }
+      canvas.drawCircle(Offset(center.x, center.y), 6, Paint()..color = water.color);
+    }
+  }
+
+  void _drawElevation(Canvas canvas) {
+    const contourColors = [
+      Color(0xaae5d19c),
+      Color(0xccd4bd85),
+      Color(0xfff0dda5),
+    ];
+    for (final entry in _elevationOverrides.entries) {
+      final column = entry.key % columns, row = entry.key ~/ columns;
+      final center = cellCenter(column, row);
+      for (var contour = 0; contour < entry.value; contour++) {
+        final inset = contour * 5.0 + 2;
+        final outline = Path()
+          ..moveTo(center.x, center.y - tileH / 2 + inset)
+          ..lineTo(center.x + tileW / 2 - inset, center.y)
+          ..lineTo(center.x, center.y + tileH / 2 - inset)
+          ..lineTo(center.x - tileW / 2 + inset, center.y)
+          ..close();
+        canvas.drawPath(
+            outline,
+            Paint()
+              ..color = contourColors[entry.value - 1]
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1.5);
+      }
+      final peak = Offset(center.x, center.y - 3.0 * entry.value);
+      canvas.drawCircle(peak, 2.5 + entry.value, Paint()..color = contourColors[entry.value - 1]);
+    }
+  }
+
+  void _drawDistricts(Canvas canvas) {
+    const colors = [
+      Color(0x5574c7ff),
+      Color(0x55ffbf69),
+      Color(0x5585d69a),
+      Color(0x55d5a2ff),
+    ];
+    for (final entry in _districtOverrides.entries) {
+      final column = entry.key % columns, row = entry.key ~/ columns;
+      final center = cellCenter(column, row);
+      final diamond = Path()
+        ..moveTo(center.x, center.y - tileH / 2)
+        ..lineTo(center.x + tileW / 2, center.y)
+        ..lineTo(center.x, center.y + tileH / 2)
+        ..lineTo(center.x - tileW / 2, center.y)
+        ..close();
+      canvas.drawPath(diamond, Paint()..color = colors[entry.value]);
+      canvas.drawPath(
+          diamond,
+          Paint()
+            ..color = colors[entry.value].withAlpha(210)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.5);
     }
   }
 
@@ -2317,6 +2553,16 @@ class _BuildBar extends StatelessWidget {
               PopupMenuItem(value: 2, child: Text('🌊 Вода')),
               PopupMenuItem(value: 3, child: Text('⛰️ Холм')),
               PopupMenuItem(value: 4, child: Text('↩️ Исходный ландшафт')),
+              PopupMenuDivider(),
+              PopupMenuItem(value: 5, child: Text('〰️ Русло реки')),
+              PopupMenuItem(value: 6, child: Text('▱ Высота: низкая')),
+              PopupMenuItem(value: 7, child: Text('▰ Высота: средняя')),
+              PopupMenuItem(value: 8, child: Text('▲ Высота: высокая')),
+              PopupMenuDivider(),
+              PopupMenuItem(value: 9, child: Text('🔵 Район 1')),
+              PopupMenuItem(value: 10, child: Text('🟠 Район 2')),
+              PopupMenuItem(value: 11, child: Text('🟢 Район 3')),
+              PopupMenuItem(value: 12, child: Text('🟣 Район 4')),
             ],
           ),
         ]),
