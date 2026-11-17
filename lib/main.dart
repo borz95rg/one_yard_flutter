@@ -802,7 +802,7 @@ class SettlementMap extends Component {
       technologyLevel: civilization.technologyLevel,
     );
     climate = result.state;
-    market.food = math.min(result.food, market.storageCapacity);
+    market.food = math.min(result.food, market.foodStorageCapacity);
     if (result.residentMoraleDelta != 0) {
       for (final resident in people.residents) {
         resident.morale = (resident.morale + result.residentMoraleDelta)
@@ -2085,6 +2085,10 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
               '${economy.fishProduction.toStringAsFixed(1)} · ${economy.meatProduction.toStringAsFixed(1)}'),
           _line('Склады · занято / общий объём',
               '${map._buildings.where((b) => b.kind == 10).length} · ${map.market.storedResources.floor()} / ${economy.storageCapacity.floor()}'),
+          _line('Еда · рыба · мясо',
+              '${economy.food.floor()}/${economy.foodStorageCapacity.floor()} · ${economy.fishStock.floor()}/${economy.fishStorageCapacity.floor()} · ${economy.meatStock.floor()}/${economy.meatStorageCapacity.floor()}'),
+          _line('Материалы · товары',
+              '${economy.materials.floor()}/${economy.materialStorageCapacity.floor()} · ${economy.goods.floor()}/${economy.goodsStorageCapacity.floor()}'),
           _line('Открытые поселения', '${civ.foundedSettlements}'),
           _line('Переселения', '${civ.migrations}'),
         ],

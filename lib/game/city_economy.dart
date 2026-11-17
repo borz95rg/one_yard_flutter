@@ -15,7 +15,12 @@ class MarketState {
     this.goodsPrice = 4,
     this.treasury = 0,
     this.taxRate = 0.08,
-    this.storageCapacity = 9999,
+    this.storageCapacity = 250,
+    this.foodStorageCapacity = 125,
+    this.fishStorageCapacity = 20,
+    this.meatStorageCapacity = 20,
+    this.materialStorageCapacity = 45,
+    this.goodsStorageCapacity = 40,
     this.busTicketFare = .75,
   });
 
@@ -31,6 +36,11 @@ class MarketState {
   double treasury;
   double taxRate;
   double storageCapacity;
+  double foodStorageCapacity;
+  double fishStorageCapacity;
+  double meatStorageCapacity;
+  double materialStorageCapacity;
+  double goodsStorageCapacity;
   double busTicketFare;
   double transitRevenue = 0;
   int ticketsSold = 0;
@@ -39,7 +49,8 @@ class MarketState {
   double _timer = 0;
 
   double get availableFood => food + fishStock + meatStock;
-  double get storedResources => food + fishStock + meatStock + materials + goods;
+  double get storedResources =>
+      food + fishStock + meatStock + materials + goods;
 
   EconomyMetrics get metrics => EconomyMetrics(
         food: food,
@@ -65,6 +76,11 @@ class MarketState {
         'treasury': treasury,
         'taxRate': taxRate,
         'storageCapacity': storageCapacity,
+        'foodStorageCapacity': foodStorageCapacity,
+        'fishStorageCapacity': fishStorageCapacity,
+        'meatStorageCapacity': meatStorageCapacity,
+        'materialStorageCapacity': materialStorageCapacity,
+        'goodsStorageCapacity': goodsStorageCapacity,
         'busTicketFare': busTicketFare,
         'transitRevenue': transitRevenue,
         'ticketsSold': ticketsSold,
@@ -85,7 +101,12 @@ class MarketState {
         goodsPrice: _read(data, 'goodsPrice', 4),
         treasury: _read(data, 'treasury', 0),
         taxRate: _read(data, 'taxRate', .08).clamp(0, .5).toDouble(),
-        storageCapacity: _read(data, 'storageCapacity', 9999),
+        storageCapacity: _read(data, 'storageCapacity', 250),
+        foodStorageCapacity: _read(data, 'foodStorageCapacity', 125),
+        fishStorageCapacity: _read(data, 'fishStorageCapacity', 20),
+        meatStorageCapacity: _read(data, 'meatStorageCapacity', 20),
+        materialStorageCapacity: _read(data, 'materialStorageCapacity', 45),
+        goodsStorageCapacity: _read(data, 'goodsStorageCapacity', 40),
         busTicketFare: _read(data, 'busTicketFare', .75).clamp(0, 3).toDouble(),
       )
         ..fishProduction = _read(data, 'fishProduction', 0)
@@ -114,7 +135,17 @@ class MarketState {
     int warehouses = 0,
   }) {
     if (!dt.isFinite || dt < 0) throw ArgumentError.value(dt, 'dt');
-    storageCapacity = 250 + max(0, warehouses) * 500;
+    final warehouseCount = max(0, warehouses).toInt();
+    foodStorageCapacity = 125 + warehouseCount * 240;
+    fishStorageCapacity = 20 + warehouseCount * 50;
+    meatStorageCapacity = 20 + warehouseCount * 50;
+    materialStorageCapacity = 45 + warehouseCount * 90;
+    goodsStorageCapacity = 40 + warehouseCount * 70;
+    storageCapacity = foodStorageCapacity +
+        fishStorageCapacity +
+        meatStorageCapacity +
+        materialStorageCapacity +
+        goodsStorageCapacity;
     _fitInventoryToCapacity();
     _timer += dt;
     if (_timer < 10) return const [];
@@ -220,33 +251,20 @@ class MarketState {
     required double materials,
     required double goods,
   }) {
-    var room = max(0.0, storageCapacity - storedResources);
-    double accept(double amount) {
-      final stored = min(max(0.0, amount), room);
-      room -= stored;
-      return stored;
-    }
-
-    this.food += accept(food);
-    fishStock += accept(fish);
-    meatStock += accept(meat);
-    this.materials += accept(materials);
-    this.goods += accept(goods);
+    this.food = min(foodStorageCapacity, this.food + max(0.0, food));
+    fishStock = min(fishStorageCapacity, fishStock + max(0.0, fish));
+    meatStock = min(meatStorageCapacity, meatStock + max(0.0, meat));
+    this.materials =
+        min(materialStorageCapacity, this.materials + max(0.0, materials));
+    this.goods = min(goodsStorageCapacity, this.goods + max(0.0, goods));
   }
 
   void _fitInventoryToCapacity() {
-    var overflow = max(0.0, storedResources - storageCapacity);
-    double trim(double amount) {
-      final removed = min(amount, overflow);
-      overflow -= removed;
-      return amount - removed;
-    }
-
-    goods = trim(goods);
-    materials = trim(materials);
-    meatStock = trim(meatStock);
-    fishStock = trim(fishStock);
-    food = trim(food);
+    food = min(food, foodStorageCapacity);
+    fishStock = min(fishStock, fishStorageCapacity);
+    meatStock = min(meatStock, meatStorageCapacity);
+    materials = min(materials, materialStorageCapacity);
+    goods = min(goods, goodsStorageCapacity);
   }
 
   static void _assignJobs(
@@ -288,7 +306,6 @@ class MarketState {
       available[workerIndex++].job = 'Скотник';
     }
   }
-
 }
 
 double _read(Map<String, dynamic> map, String key, double fallback) {

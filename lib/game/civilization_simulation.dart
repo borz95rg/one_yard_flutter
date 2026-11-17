@@ -1028,9 +1028,12 @@ class CivilizationSimulation {
       final exportTotal = foodExport + materialExport + goodsExport;
       worldTradeVolume += exportTotal;
       market.tradeVolume += exportTotal;
-      market.food = min(9999, market.food + foodExport * .12);
-      market.materials = min(9999, market.materials + materialExport * .1);
-      market.goods = min(9999, market.goods + goodsExport * .12);
+      market.food =
+          min(market.foodStorageCapacity, market.food + foodExport * .12);
+      market.materials = min(market.materialStorageCapacity,
+          market.materials + materialExport * .1);
+      market.goods =
+          min(market.goodsStorageCapacity, market.goods + goodsExport * .12);
 
       if (city.stability > .52 &&
           city.food > population * .8 &&
@@ -1143,7 +1146,7 @@ class CivilizationSimulation {
         final export =
             min(state.goods - state.population * .04, state.population * .018);
         state.goods -= export;
-        market.goods = min(9999, market.goods + export);
+        market.goods = min(market.goodsStorageCapacity, market.goods + export);
         market.tradeVolume += export;
         worldTradeVolume += export;
         state.treasury += export * market.goodsPrice * .12;
