@@ -1053,17 +1053,62 @@ class CivilizationSimulation {
     _simulateForeignNations(market);
 
     foundedSettlements = worldSettlements.where((city) => city.unlocked).length;
-    if (foundedSettlements > 1 && _random.nextDouble() < .22) {
-      final destinations = worldSettlements
-          .where((city) => city.unlocked && !city.isCapital)
-          .toList();
-      if (destinations.isNotEmpty) {
-        final destination = destinations[_random.nextInt(destinations.length)];
-        destination.population++;
-        migrations++;
-        events.add('🚶 Переселенцы прибыли в ${destination.name}');
-      }
+    _moveResidentsBetweenSettlements(events);
+  }
+
+  void _moveResidentsBetweenSettlements(List<String> events) {
+    if (_random.nextDouble() >= .22) return;
+    final cities = worldSettlements
+        .where((city) => city.unlocked && !city.isCapital)
+        .toList();
+    final origins = cities
+        .where((city) => city.population > 4 && city.stability > .25)
+        .toList();
+    if (origins.isEmpty || cities.length < 2) return;
+
+    final origin = origins[_random.nextInt(origins.length)];
+    final destinations = cities
+        .where((city) =>
+            city != origin &&
+            city.stability > .25 &&
+            city.food > city.population * .25)
+        .toList();
+    if (destinations.isEmpty) return;
+
+    // Prefer destinations with food reserves and room for more households.
+    destinations.sort((a, b) {
+      final aScore = a.food / max(1, a.population) - a.population / 180;
+      final bScore = b.food / max(1, b.population) - b.population / 180;
+      return bScore.compareTo(aScore);
+    });
+    final pool = destinations.take(min(3, destinations.length)).toList();
+    final destination = pool[_random.nextInt(pool.length)];
+    final moving = min(1 + _random.nextInt(3), origin.population - 3);
+    if (!transferResidents(origin, destination, moving)) return;
+    events.add(
+        '🚶 $moving жителей переселились из ${origin.name} в ${destination.name}');
+  }
+
+  /// Moves an aggregate population between two founded satellite settlements.
+  /// Individual people remain attached to the main-city simulation.
+  bool transferResidents(
+    WorldSettlementState origin,
+    WorldSettlementState destination,
+    int count,
+  ) {
+    if (origin == destination ||
+        !origin.unlocked ||
+        !destination.unlocked ||
+        origin.isCapital ||
+        destination.isCapital ||
+        count <= 0 ||
+        origin.population - count < 3) {
+      return false;
     }
+    origin.population -= count;
+    destination.population += count;
+    migrations += count;
+    return true;
   }
 
   void _simulateForeignNations(MarketState market) {
