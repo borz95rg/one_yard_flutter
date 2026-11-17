@@ -40,7 +40,7 @@ void main() {
       expect(restored.legacyHtmlSave, legacy);
       expect(restored.payload['migration']['sourceVersion'], 18);
       expect(restored.payload['migration']['status'],
-          'raw_preserved_field_mapping_pending');
+          'partial_world_state_mapped_other_fields_pending');
     });
 
     test('rejects malformed and unsupported saves', () {

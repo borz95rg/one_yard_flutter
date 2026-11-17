@@ -71,8 +71,8 @@ class IsometricGrid {
   /// Points on a shared edge are assigned to the nearest tile center.
   GridCell? cellAt(IsometricPoint point) {
     final fractional = worldToGrid(point);
-    final column = fractional.x.round();
-    final row = fractional.y.round();
+    final column = _nearestCell(fractional.x);
+    final row = _nearestCell(fractional.y);
     if (column < 0 || column >= columns || row < 0 || row >= rows) {
       return null;
     }
@@ -81,6 +81,13 @@ class IsometricGrid {
         (point.y - center.y).abs() / (tileHeight / 2);
     if (normalizedDistance > 1.0000001) return null;
     return GridCell(column, row);
+  }
+
+  // On a shared edge, choose the lower-index cell consistently.
+  static int _nearestCell(double value) {
+    final lower = value.floor();
+    final fraction = value - lower;
+    return fraction == 0.5 ? lower : value.round();
   }
 
   bool contains(GridCell cell) =>

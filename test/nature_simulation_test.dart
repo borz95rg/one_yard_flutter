@@ -11,7 +11,7 @@ void main() {
     expect(result.state.seasonIndex, 1);
     expect(result.state.seasonTimer, 0);
     expect(result.state.nature['harvests'], 1);
-    expect(result.food, 13); // floor(20 * .16 * .78)
+    expect(result.food, 12); // 10 + floor(20 * .16 * .78)
     expect(result.events.single, contains('урожай'));
   });
 
@@ -26,6 +26,16 @@ void main() {
     expect(result.state.seasonIndex, 0);
     expect(result.state.worldYear, 5);
     expect(result.food, 8); // ceil(20 * .08)
+  });
+
+  test('catches up every season when a long frame spans a full year', () {
+    final result = NatureSimulation(random: () => 0.9).update(
+      state: WorldState.initial(), dt: 220, residentCount: 20, food: 10,
+    );
+    expect(result.state.seasonIndex, 0);
+    expect(result.state.worldYear, 2);
+    expect(result.state.nature['harvests'], 2);
+    expect(result.food, 12);
   });
 
   test('natural hazard roll reproduces drought counters and food loss', () {

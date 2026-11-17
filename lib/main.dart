@@ -202,10 +202,14 @@ class SettlementGame extends FlameGame {
     } catch (_) {
       // The scene remains playable on platforms without app-private storage.
     }
-    // The image is registered at assets/city_map_crop.jpg, not in Flame's
-    // default assets/images/ directory.
     images.prefix = 'assets/';
-    map = SettlementMap(artwork: await images.load('city_map_crop.jpg'));
+    ui.Image? artwork;
+    try {
+      artwork = await images.load('city_map_crop.jpg');
+    } catch (_) {
+      events.value = ['Подложка карты не загрузилась: включён базовый ландшафт'];
+    }
+    map = SettlementMap(artwork: artwork);
     final previous = await _saveRepository?.load();
     if (previous != null) {
       map.restore(previous);
