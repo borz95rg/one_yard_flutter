@@ -12,6 +12,7 @@ import 'game/civilization_simulation.dart';
 import 'game/isometric_grid.dart';
 import 'game/nature_simulation.dart';
 import 'game/resident_simulation.dart';
+import 'game/transport_schedule.dart';
 import 'game/world_state.dart';
 import 'persistence/game_save.dart';
 import 'persistence/io_save_file_store.dart';
@@ -438,8 +439,8 @@ class SettlementMap extends Component {
     return _cachedTrafficRoutes;
   }
 
-  double get _busProgress =>
-      (((_timeOfDay * 24 * 2.4) % 18) / 18).clamp(0, 1).toDouble();
+  double get _busProgress => BusSchedule.routeProgressAt(_timeOfDay * 24);
+
 
   void restore(GameSave save) {
     final legacy = save.legacyHtmlSave;
@@ -2029,6 +2030,11 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
               civ.civicBuildings.contains('Транспортное депо')
                   ? '12 мест · депо построено'
                   : '4 места · депо увеличит вместимость'),
+          _line(
+              'Расписание автобусов',
+              BusSchedule.isOperatingAt(map._timeOfDay * 24)
+                  ? '06:00–22:00 · круг каждые 2 игровых часа'
+                  : 'перерыв · рейсы с 06:00 до 22:00'),
           _line('Мировая торговля', '${civ.worldTradeVolume.floor()}'),
           _line('Фермы · обрабатываемые поля',
               '${map._buildings.where((b) => b.kind == 1).length} · ${map._buildings.where((b) => b.kind == 1).length * 4}'),
@@ -2036,8 +2042,8 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
               '${map.climate.nature['harvests']?.floor() ?? 0} · ${map.climate.nature['soil']?.round() ?? 0}%'),
           _line('Рыба · мясо за производственный цикл',
               '${economy.fishProduction.toStringAsFixed(1)} · ${economy.meatProduction.toStringAsFixed(1)}'),
-          _line('Склады · вместимость каждого ресурса',
-              '${map._buildings.where((b) => b.kind == 10).length} · ${economy.storageCapacity.floor()}'),
+          _line('Склады · занято / общий объём',
+              '${map._buildings.where((b) => b.kind == 10).length} · ${map.market.storedResources.floor()} / ${economy.storageCapacity.floor()}'),
           _line('Открытые поселения', '${civ.foundedSettlements}'),
           _line('Переселения', '${civ.migrations}'),
         ],
