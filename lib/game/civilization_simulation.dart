@@ -770,12 +770,17 @@ class CivilizationSimulation {
   List<String> update({
     required double dt,
     required List<ResidentAgent> residents,
+    List<ResidentAgent>? allResidents,
     required List<ResidentSite> sites,
     required MarketState market,
   }) {
     if (!dt.isFinite || dt < 0) throw ArgumentError.value(dt, 'dt');
     final events = <String>[];
     if (dt == 0) return events;
+    final population = allResidents ?? residents;
+    for (final resident in population.where((r) => r.settlementIndex > 0)) {
+      resident.age += dt;
+    }
     _yearTimer += dt;
     while (_yearTimer >= 60) {
       _yearTimer -= 60;
@@ -910,7 +915,7 @@ class CivilizationSimulation {
     }
     if (_tradeTimer >= 12) {
       _tradeTimer %= 12;
-      _updateWorldNetwork(residents, market, events);
+      _updateWorldNetwork(residents, population, market, events);
     }
     _updateEra(residents.length, events);
     _updateNation(dt, residents, market, events);
@@ -948,27 +953,42 @@ class CivilizationSimulation {
   }
 
   void _updateWorldNetwork(
-      List<ResidentAgent> residents, MarketState market, List<String> events) {
+      List<ResidentAgent> residents,
+      List<ResidentAgent> allResidents,
+      MarketState market,
+      List<String> events) {
     for (var index = 0; index < worldSettlements.length; index++) {
       final city = worldSettlements[index];
-      if (!city.unlocked && residents.length >= city.populationThreshold) {
+      final capitalPopulation = allResidents
+          .where((resident) => resident.settlementIndex == 0)
+          .length;
+      if (!city.unlocked && capitalPopulation >= city.populationThreshold) {
+        city.unlocked = true;
+        city.population = 0;
+        final founders = _foundingHousehold(index, allResidents);
+        if (founders.isEmpty) {
+          city.unlocked = false;
+          continue;
+        }
+        city.population = founders.length;
         city
-          ..unlocked = true
-          ..population =
-              max(3, (residents.length * (.12 + index * .035)).round())
-          ..treasury = 45 + residents.length * .7
+          ..treasury = 45 + capitalPopulation * .7
           ..food = 20 + city.population * (city.kind == 'farm' ? 3.2 : 1.6)
           ..materials = 8 + city.population * .55
           ..goods = 5 + city.population * .45
           ..army = max(1, city.population ~/ 24).toDouble()
           ..foundedYear = year;
-        events.add('🏙️ Основано поселение «${city.name}»');
+        migrations += founders.length;
+        events.add(
+            '🏙️ Основано поселение «${city.name}»: туда переехала семья из ${founders.length} человек');
       }
       if (!city.unlocked) continue;
 
       if (city.isCapital) {
         city
-          ..population = residents.length
+          ..population = allResidents
+              .where((resident) => resident.settlementIndex == index)
+              .length
           ..treasury = market.treasury
           ..food = market.food
           ..materials = market.materials
@@ -1039,12 +1059,18 @@ class CivilizationSimulation {
           city.food > population * .8 &&
           city.treasury > population * 2 &&
           _random.nextDouble() < .38) {
+        allResidents.add(_createSatelliteResident(index, city, allResidents));
         city.population++;
       } else if (city.stability < .25 &&
           city.population > 3 &&
           _random.nextDouble() < .2) {
-        city.population--;
-        events.add('📉 В «${city.name}» жители уезжают из-за нехватки запасов');
+        final capital = worldSettlements.firstWhere(
+            (settlement) => settlement.isCapital && settlement.unlocked);
+        final moved = transferResidents(city, capital, allResidents);
+        if (moved.isNotEmpty) {
+          events.add(
+              '📉 ${moved.length} жителей покинули ${city.name} из-за нехватки запасов и переехали в ${capital.name}');
+        }
       }
       if (city.army < city.population * .08 && city.treasury > 180) {
         city
@@ -1056,18 +1082,46 @@ class CivilizationSimulation {
     _simulateForeignNations(market);
 
     foundedSettlements = worldSettlements.where((city) => city.unlocked).length;
-    _moveResidentsBetweenSettlements(events);
+    _moveResidentsBetweenSettlements(allResidents, events);
   }
 
-  void _moveResidentsBetweenSettlements(List<String> events) {
+  List<ResidentAgent> _foundingHousehold(
+      int destinationIndex, List<ResidentAgent> allResidents) {
+    final candidates = allResidents
+        .where((resident) => resident.settlementIndex == 0)
+        .toList()
+      ..sort((a, b) => b.age.compareTo(a.age));
+    final moved = <ResidentAgent>[];
+    for (final candidate in candidates) {
+      final household = _householdOf(candidate, allResidents);
+      if (household.isEmpty ||
+          household.any((resident) => resident.settlementIndex != 0) ||
+          candidates.length - household.length < 4) {
+        continue;
+      }
+      _completeMove(household, destinationIndex, allResidents);
+      moved.addAll(household);
+      break;
+    }
+    return moved;
+  }
+
+  void _moveResidentsBetweenSettlements(
+      List<ResidentAgent> allResidents, List<String> events) {
     if (_random.nextDouble() >= .22) return;
-    final cities = worldSettlements
-        .where((city) => city.unlocked && !city.isCapital)
-        .toList();
-    final origins = cities
-        .where((city) => city.population > 4 && city.stability > .25)
-        .toList();
-    if (origins.isEmpty || cities.length < 2) return;
+    final cities = worldSettlements.where((city) => city.unlocked).toList();
+    if (cities.length < 2) return;
+    final origins = <WorldSettlementState>[];
+    for (var index = 0; index < worldSettlements.length; index++) {
+      final city = worldSettlements[index];
+      if (city.unlocked &&
+          city.population > 4 &&
+          city.stability > .25 &&
+          allResidents.any((resident) => resident.settlementIndex == index)) {
+        origins.add(city);
+      }
+    }
+    if (origins.isEmpty) return;
 
     final origin = origins[_random.nextInt(origins.length)];
     final destinations = cities
@@ -1086,32 +1140,152 @@ class CivilizationSimulation {
     });
     final pool = destinations.take(min(3, destinations.length)).toList();
     final destination = pool[_random.nextInt(pool.length)];
-    final moving = min(1 + _random.nextInt(3), origin.population - 3);
-    if (!transferResidents(origin, destination, moving)) return;
+    final moved = transferResidents(origin, destination, allResidents);
+    if (moved.isEmpty) return;
+    final moving = moved.length;
     events.add(
         '🚶 $moving жителей переселились из ${origin.name} в ${destination.name}');
   }
 
-  /// Moves an aggregate population between two founded satellite settlements.
-  /// Individual people remain attached to the main-city simulation.
-  bool transferResidents(
+  /// Moves a complete household and its resident records between founded cities.
+  List<ResidentAgent> transferResidents(
     WorldSettlementState origin,
     WorldSettlementState destination,
-    int count,
+    List<ResidentAgent> allResidents,
   ) {
+    final originIndex = worldSettlements.indexOf(origin);
+    final destinationIndex = worldSettlements.indexOf(destination);
     if (origin == destination ||
         !origin.unlocked ||
         !destination.unlocked ||
-        origin.isCapital ||
-        destination.isCapital ||
-        count <= 0 ||
-        origin.population - count < 3) {
-      return false;
+        originIndex < 0 ||
+        destinationIndex < 0) {
+      return const [];
     }
-    origin.population -= count;
-    destination.population += count;
-    migrations += count;
-    return true;
+    final candidates = allResidents
+        .where((resident) => resident.settlementIndex == originIndex)
+        .toList();
+    final shuffled = List<ResidentAgent>.of(candidates)..shuffle(_random);
+    for (final candidate in shuffled) {
+      final household = _householdOf(candidate, allResidents);
+      if (household.isEmpty ||
+          household
+              .any((resident) => resident.settlementIndex != originIndex) ||
+          origin.population - household.length < 3) {
+        continue;
+      }
+      _completeMove(household, destinationIndex, allResidents);
+      origin.population -= household.length;
+      destination.population += household.length;
+      migrations += household.length;
+      return household;
+    }
+    return const [];
+  }
+
+  void _completeMove(List<ResidentAgent> household, int destinationIndex,
+      List<ResidentAgent> allResidents) {
+    final ids = household.map((resident) => resident.id).toSet();
+    for (final resident in household) {
+      _prepareResidentForMove(resident, destinationIndex);
+      final oldFactionId = resident.factionId;
+      if (oldFactionId != null) {
+        factions
+            .where((faction) => faction.id == oldFactionId)
+            .forEach((faction) => faction.memberIds.remove(resident.id));
+        resident.factionId = null;
+      }
+    }
+    households.removeWhere((home) => home.memberIds.any(ids.contains));
+    for (final resident in allResidents) {
+      if (ids.contains(resident.id)) {
+        resident.friendIds.removeWhere((id) => !ids.contains(id));
+        resident.rivalIds.removeWhere((id) => !ids.contains(id));
+      } else {
+        resident.friendIds.removeWhere(ids.contains);
+        resident.rivalIds.removeWhere(ids.contains);
+      }
+    }
+  }
+
+  List<ResidentAgent> _householdOf(
+      ResidentAgent seed, List<ResidentAgent> candidates) {
+    final household = <int>{seed.id};
+    bool related(ResidentAgent a, ResidentAgent b) {
+      if (a.familyId != null && a.familyId == b.familyId) return true;
+      if (households.any((home) =>
+          home.memberIds.contains(a.id) && home.memberIds.contains(b.id))) {
+        return true;
+      }
+      return a.spouseId == b.id ||
+          b.spouseId == a.id ||
+          a.parentIds.contains(b.id) ||
+          b.parentIds.contains(a.id) ||
+          a.childIds.contains(b.id) ||
+          b.childIds.contains(a.id);
+    }
+
+    var changed = true;
+    while (changed) {
+      changed = false;
+      for (final candidate in candidates) {
+        if (household.contains(candidate.id)) continue;
+        final linked = candidates.any((member) =>
+            household.contains(member.id) && related(member, candidate));
+        if (linked) {
+          household.add(candidate.id);
+          changed = true;
+        }
+      }
+    }
+    return candidates
+        .where((resident) => household.contains(resident.id))
+        .toList();
+  }
+
+  void _prepareResidentForMove(ResidentAgent resident, int destinationIndex) {
+    resident
+      ..settlementIndex = destinationIndex
+      ..homeId = null
+      ..homePosition = null
+      ..propertyValue = 0
+      ..workSite = null
+      ..target = null
+      ..onShift = false
+      ..travelingToWork = false
+      ..returningHome = false
+      ..waitingForBus = false
+      ..onBus = false
+      ..busOriginStopId = null
+      ..busDestinationStopId = null
+      ..busVehicleId = null
+      ..activity = ResidentActivity.wandering;
+  }
+
+  ResidentAgent _createSatelliteResident(int settlementIndex,
+      WorldSettlementState city, List<ResidentAgent> residents) {
+    final id = residents.fold<int>(
+            0, (highest, resident) => max(highest, resident.id)) +
+        1;
+    const names = ['Алия', 'Арман', 'Баян', 'Дамир', 'Ева', 'Марат', 'Самира'];
+    const personalities = ['builder', 'explorer', 'mystic', 'normal'];
+    return ResidentAgent(
+      id: id,
+      name: names[_random.nextInt(names.length)],
+      position: IsometricPoint(
+        (city.x - .5) * 1500,
+        (city.y - .5) * 740,
+      ),
+      gender: _random.nextBool() ? 'М' : 'Ж',
+      age: 72 + _random.nextDouble() * 400,
+      personality: personalities[_random.nextInt(personalities.length)],
+      needs: ResidentNeeds(.2, .2, .15),
+      morale: city.stability,
+      wallet: 4 + _random.nextInt(12).toDouble(),
+      generation: 0,
+      familyId: id,
+      settlementIndex: settlementIndex,
+    );
   }
 
   void _simulateForeignNations(MarketState market) {

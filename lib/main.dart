@@ -771,7 +771,7 @@ class SettlementMap extends Component {
     );
     market.update(
       dt: dt,
-      residents: people.residents,
+      residents: people.localResidents,
       sites: people.sites,
       technologyLevel: civilization.technologyLevel,
       eraIndex: civilization.eraIndex,
@@ -779,7 +779,8 @@ class SettlementMap extends Component {
     );
     final cityEvents = civilization.update(
       dt: dt,
-      residents: people.residents,
+      residents: people.localResidents,
+      allResidents: people.residents,
       sites: people.sites,
       market: market,
     );
@@ -796,7 +797,7 @@ class SettlementMap extends Component {
     final result = nature.update(
       state: climate,
       dt: dt,
-      residentCount: people.residents.length,
+      residentCount: people.localResidents.length,
       food: market.food,
       farmCount: _buildings.where((building) => building.kind == 1).length,
       technologyLevel: civilization.technologyLevel,
@@ -804,7 +805,7 @@ class SettlementMap extends Component {
     climate = result.state;
     market.food = math.min(result.food, market.foodStorageCapacity);
     if (result.residentMoraleDelta != 0) {
-      for (final resident in people.residents) {
+      for (final resident in people.localResidents) {
         resident.morale = (resident.morale + result.residentMoraleDelta)
             .clamp(0, 1)
             .toDouble();
@@ -820,7 +821,7 @@ class SettlementMap extends Component {
 
   void _growHousing() {
     final homes = _buildings.where((building) => building.kind == 0).length;
-    if (people.residents.length <= homes * 4 ||
+    if (people.localResidents.length <= homes * 4 ||
         market.treasury < 25 ||
         market.materials < 10) {
       return;
@@ -926,8 +927,8 @@ class SettlementMap extends Component {
   ];
 
   void _drawTraffic(Canvas canvas) {
-    if (artwork == null || people.residents.length < 3) return;
-    final stage = (people.residents.length / 70).clamp(0, 1).toDouble();
+    if (artwork == null || people.localResidents.length < 3) return;
+    final stage = (people.localResidents.length / 70).clamp(0, 1).toDouble();
     final count = math.min(22, 2 + (stage * 20).floor());
     final commuterRoutes = _trafficRoutes;
     final fallbackRoadPoints = _connectedRoadRoute()
@@ -1724,7 +1725,7 @@ class SettlementMap extends Component {
   }
 
   void _drawPeople(Canvas canvas) {
-    for (final person in people.residents) {
+    for (final person in people.localResidents) {
       if (person.onBus) continue;
       final p = person.position;
       final bob = math.sin(person.walkPhase) * 1.5;
@@ -1976,7 +1977,7 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
     }
     final map = widget.game.map;
     final civ = map.civilization;
-    final people = map.people.residents;
+    final people = map.people.localResidents;
     final economy = map.market;
     final averageHealth = people.isEmpty
         ? 100

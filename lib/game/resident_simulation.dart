@@ -55,6 +55,7 @@ class ResidentAgent {
     this.name = 'Житель',
     this.generation = 0,
     this.familyId,
+    this.settlementIndex = 0,
   });
 
   final int id;
@@ -68,6 +69,7 @@ class ResidentAgent {
   double wallet;
   final int generation;
   int? familyId;
+  int settlementIndex;
   int? factionId;
   int? spouseId;
   double birthTimer = 0;
@@ -120,6 +122,7 @@ class ResidentAgent {
         'wallet': wallet,
         'generation': generation,
         'familyId': familyId,
+        'settlementIndex': settlementIndex,
         'factionId': factionId,
         'spouseId': spouseId,
         'birthTimer': birthTimer,
@@ -171,6 +174,7 @@ class ResidentAgent {
       wallet: _number(data['wallet'], 12),
       generation: _integer(data['generation'], 0),
       familyId: _optionalInteger(data['familyId']),
+      settlementIndex: _integer(data['settlementIndex'], 0).clamp(0, 5),
     )
       ..spouseId = _optionalInteger(data['spouseId'])
       ..factionId = _optionalInteger(data['factionId'])
@@ -388,17 +392,20 @@ class ResidentSimulation {
   final Map<int, double> _lastBusProgresses = {};
   int _nextId = 9;
 
+  List<ResidentAgent> get localResidents =>
+      residents.where((resident) => resident.settlementIndex == 0).toList();
+
   ResidentMetrics get metrics {
-    final familyIds = residents.map((r) => r.familyId ?? r.id).toSet();
+    final local = localResidents;
+    final familyIds = local.map((r) => r.familyId ?? r.id).toSet();
     final highestGeneration =
-        residents.fold<int>(0, (v, r) => max(v, r.generation));
+        local.fold<int>(0, (v, r) => max(v, r.generation));
     return ResidentMetrics(
-      population: residents.length,
-      children: residents.where((r) => r.age < 42).length,
-      adults: residents.where((r) => r.age >= 42 && r.age < 620).length,
-      elders: residents.where((r) => r.age >= 620).length,
-      couples:
-          residents.where((r) => r.spouseId != null && r.gender == 'М').length,
+      population: local.length,
+      children: local.where((r) => r.age < 42).length,
+      adults: local.where((r) => r.age >= 42 && r.age < 620).length,
+      elders: local.where((r) => r.age >= 620).length,
+      couples: local.where((r) => r.spouseId != null && r.gender == 'М').length,
       familyLines: familyIds.length,
       generations: highestGeneration + 1,
     );
@@ -420,7 +427,7 @@ class ResidentSimulation {
   }) {
     if (!dt.isFinite || dt < 0) throw ArgumentError.value(dt, 'dt');
     final shiftHours = hour >= 8 && hour < 18;
-    for (final r in residents) {
+    for (final r in localResidents) {
       r.needs.hunger = _clamp(r.needs.hunger + .012 * dt);
       r.needs.thirst = _clamp(r.needs.thirst + .018 * dt);
       r.needs.shelter =
@@ -737,7 +744,7 @@ class ResidentSimulation {
         final stop =
             sites.where((site) => site.mapId == arrival.key).firstOrNull;
         if (stop == null) continue;
-        for (final resident in residents) {
+        for (final resident in localResidents) {
           if (resident.onBus &&
               resident.busVehicleId == vehicleId &&
               resident.busDestinationStopId == arrival.key) {
@@ -769,7 +776,7 @@ class ResidentSimulation {
             .where((resident) =>
                 resident.onBus && resident.busVehicleId == vehicleId)
             .length;
-        for (final resident in residents) {
+        for (final resident in localResidents) {
           if (occupancy >= max(0, busCapacity)) break;
           if (!resident.waitingForBus ||
               resident.activity != ResidentActivity.waitingAtBusStop ||
@@ -822,13 +829,14 @@ class ResidentSimulation {
     _socialTimer += dt;
     if (_socialTimer < 3.5) return;
     _socialTimer = 0;
-    for (var i = 0; i < residents.length; i++) {
-      final a = residents[i];
+    final locals = localResidents;
+    for (var i = 0; i < locals.length; i++) {
+      final a = locals[i];
       ResidentAgent? nearest;
       var nearestDistance = 72.0;
-      for (var j = 0; j < residents.length; j++) {
+      for (var j = 0; j < locals.length; j++) {
         if (i == j) continue;
-        final b = residents[j];
+        final b = locals[j];
         final dx = a.position.x - b.position.x,
             dy = a.position.y - b.position.y;
         final distance = sqrt(dx * dx + dy * dy);
@@ -857,15 +865,16 @@ class ResidentSimulation {
 
   void _updateFamilies(double dt) {
     _familyTimer += dt;
-    for (final r in residents) {
+    final locals = localResidents;
+    for (final r in locals) {
       r.age += dt;
     }
     if (_familyTimer >= 5) {
       _familyTimer -= 5;
-      for (final a in List<ResidentAgent>.of(residents)) {
+      for (final a in List<ResidentAgent>.of(locals)) {
         if (a.spouseId != null || _lifeStage(a.age) != 'взрослый') continue;
         ResidentAgent? partner;
-        for (final b in residents) {
+        for (final b in locals) {
           if (a.friendIds.contains(b.id) &&
               b.spouseId == null &&
               b.gender != a.gender &&
@@ -887,10 +896,10 @@ class ResidentSimulation {
           partner.morale = _clamp(partner.morale + .18);
         }
       }
-      for (final mother in List<ResidentAgent>.of(residents)) {
+      for (final mother in List<ResidentAgent>.of(locals)) {
         if (mother.spouseId == null ||
             mother.gender != 'Ж' ||
-            residents.length >= 36 ||
+            locals.length >= 36 ||
             mother.age < 75 ||
             mother.age > 480 ||
             !_hasNearbyHome(mother)) {
@@ -909,14 +918,14 @@ class ResidentSimulation {
         }
       }
     }
-    for (final child in residents) {
+    for (final child in locals) {
       if (child.age >= 42 ||
           child.parentIds.isEmpty ||
           child.activity == ResidentActivity.working) {
         continue;
       }
       ResidentAgent? parent;
-      for (final resident in residents) {
+      for (final resident in locals) {
         if (child.parentIds.contains(resident.id)) {
           parent = resident;
           break;
@@ -936,7 +945,10 @@ class ResidentSimulation {
     final personality = _rng.nextDouble() < .68
         ? a.personality
         : traits[_rng.nextInt(traits.length)];
-    final id = _nextId++;
+    final highestId = residents.fold<int>(
+        0, (highest, resident) => max(highest, resident.id));
+    final id = max(_nextId, highestId + 1);
+    _nextId = id + 1;
     const childNames = [
       'Алия',
       'Арман',
@@ -978,7 +990,7 @@ class ResidentSimulation {
       });
 
   ResidentAgent? _byId(int id) {
-    for (final resident in residents) {
+    for (final resident in localResidents) {
       if (resident.id == id) return resident;
     }
     return null;
