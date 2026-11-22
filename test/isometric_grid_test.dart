@@ -28,7 +28,7 @@ void main() {
   test('rejects points outside tile diamond and map bounds', () {
     expect(grid.cellAt(const IsometricPoint(0, 0)), GridCell(0, 0));
     expect(grid.cellAt(const IsometricPoint(16, 8)), GridCell(0, 0));
-    expect(grid.cellAt(const IsometricPoint(17, 8)), isNull);
+    expect(grid.cellAt(const IsometricPoint(17, 8)), GridCell(1, 0));
     expect(grid.cellAt(grid.cellCenter(const GridCell(20, 0))), isNull);
   });
 

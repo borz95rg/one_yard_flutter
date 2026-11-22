@@ -12,6 +12,7 @@ import 'game/civilization_simulation.dart';
 import 'game/isometric_grid.dart';
 import 'game/nature_simulation.dart';
 import 'game/resident_simulation.dart';
+import 'game/transport_schedule.dart';
 import 'game/world_state.dart';
 import 'persistence/game_save.dart';
 import 'persistence/io_save_file_store.dart';
@@ -167,6 +168,8 @@ class SettlementGame extends FlameGame {
   final ValueNotifier<EconomyMetrics> economy = ValueNotifier(
     const EconomyMetrics(
         food: 45,
+        fish: 0,
+        meat: 0,
         materials: 28,
         goods: 18,
         treasury: 0,
@@ -200,7 +203,10 @@ class SettlementGame extends FlameGame {
     } catch (_) {
       // The scene remains playable on platforms without app-private storage.
     }
-    map = SettlementMap(artwork: await images.load('city_map_crop.jpg'));
+    images.prefix = 'assets/';
+    // Build the city from live isometric tiles and objects. The old screenshot
+    // background made the world look like a flat picture with sprites on top.
+    map = SettlementMap();
     final previous = await _saveRepository?.load();
     if (previous != null) {
       map.restore(previous);
@@ -331,18 +337,21 @@ class SettlementMap extends Component {
   static const columns = 28, rows = 24;
   static const tileW = 68.0, tileH = 36.0;
   final List<_Building> _buildings = [
-    const _Building(13, 10, 3),
-    const _Building(10, 12, 0),
-    const _Building(16, 12, 1),
-    const _Building(12, 15, 2),
-    const _Building(18, 15, 0),
-    const _Building(8, 9, 1),
-    const _Building(20, 10, 2),
-    const _Building(15, 7, 0),
-    const _Building(6, 14, 0),
-    const _Building(21, 17, 1),
+    const _Building(13, 10, 3, visible: true),
+    const _Building(10, 12, 0, visible: true),
+    const _Building(16, 12, 1, visible: true),
+    const _Building(12, 15, 2, visible: true),
+    const _Building(18, 15, 0, visible: true),
+    const _Building(8, 9, 1, visible: true),
+    const _Building(20, 10, 2, visible: true),
+    const _Building(15, 7, 0, visible: true),
+    const _Building(6, 14, 0, visible: true),
+    const _Building(21, 17, 1, visible: true),
   ];
   final Map<int, int> _terrainOverrides = {};
+  final Map<int, int> _elevationOverrides = {};
+  final Map<int, int> _districtOverrides = {};
+  final Set<int> _riverCells = {};
   late ResidentSimulation people = ResidentSimulation.initial(
     sites: _defaultSites(),
     width: tileW * columns,
@@ -354,6 +363,8 @@ class SettlementMap extends Component {
   WorldState climate = WorldState.initial();
   _BusRoute? _cachedBusRoute;
   bool _busRouteDirty = true;
+  List<List<Offset>> _cachedTrafficRoutes = const [];
+  bool _trafficRoutesDirty = true;
   double _timeOfDay = .35;
   double _housingGrowthTimer = 0;
   final List<String> recentEvents = [];
@@ -397,6 +408,15 @@ class SettlementMap extends Component {
           for (final entry in _terrainOverrides.entries)
             '${entry.key}': entry.value,
         },
+        'elevations': {
+          for (final entry in _elevationOverrides.entries)
+            '${entry.key}': entry.value,
+        },
+        'districts': {
+          for (final entry in _districtOverrides.entries)
+            '${entry.key}': entry.value,
+        },
+        'riverCells': _riverCells.toList(growable: false),
       };
 
   _BusRoute? get _busRoute {
@@ -407,8 +427,15 @@ class SettlementMap extends Component {
     return _cachedBusRoute;
   }
 
-  double get _busProgress =>
-      (((_timeOfDay * 24 * 2.4) % 18) / 18).clamp(0, 1).toDouble();
+  List<List<Offset>> get _trafficRoutes {
+    if (_trafficRoutesDirty) {
+      _cachedTrafficRoutes = _createTrafficRoutes();
+      _trafficRoutesDirty = false;
+    }
+    return _cachedTrafficRoutes;
+  }
+
+  double get _busProgress => BusSchedule.routeProgressAt(_timeOfDay * 24);
 
   void restore(GameSave save) {
     final legacy = save.legacyHtmlSave;
@@ -430,6 +457,35 @@ class SettlementMap extends Component {
         }
       }
     }
+    void restoreCellTypes(Object? source, Map<int, int> target,
+        {required int minimum, required int maximum}) {
+      if (source is! Map) return;
+      target.clear();
+      for (final entry in source.entries) {
+        final key = int.tryParse('${entry.key}');
+        final type = entry.value;
+        if (key != null &&
+            key >= 0 &&
+            key < columns * rows &&
+            type is int &&
+            type >= minimum &&
+            type <= maximum) {
+          target[key] = type;
+        }
+      }
+    }
+
+    restoreCellTypes(payload['elevations'], _elevationOverrides,
+        minimum: 1, maximum: 3);
+    restoreCellTypes(payload['districts'], _districtOverrides,
+        minimum: 0, maximum: 3);
+    _riverCells
+      ..clear()
+      ..addAll((payload['riverCells'] is List
+              ? (payload['riverCells'] as List).whereType<num>()
+              : const <num>[])
+          .map((value) => value.toInt())
+          .where((key) => key >= 0 && key < columns * rows));
     final savedBuildings = payload['buildings'];
     if (savedBuildings is List) {
       final restored = <_Building>[];
@@ -456,6 +512,7 @@ class SettlementMap extends Component {
       }
     }
     _busRouteDirty = true;
+    _trafficRoutesDirty = true;
     final worldData = payload['worldState'];
     if (worldData is Map) {
       climate = WorldState.fromJson(Map<String, dynamic>.from(worldData));
@@ -573,8 +630,9 @@ class SettlementMap extends Component {
         _buildings.any((b) => b.column == cell.column && b.row == cell.row)) {
       return false;
     }
-    final terrain = _terrainOverrides[cell.row * columns + cell.column];
-    if (terrain == 2 || terrain == 3) return false;
+    final key = cell.row * columns + cell.column;
+    final terrain = _terrainOverrides[key];
+    if (terrain == 2 || terrain == 3 || _riverCells.contains(key)) return false;
     if (kind == 8 && cell.column < 20) return false;
     if (kind == 11 && !_hasAdjacentRoad(cell.column, cell.row)) return false;
     final costs = [8.0, 12, 15, 20, 7, 22, 30, 4, 18, 20, 16, 8];
@@ -584,6 +642,7 @@ class SettlementMap extends Component {
     }
     market.materials -= cost;
     _buildings.add(_Building(cell.column, cell.row, kind, visible: true));
+    _trafficRoutesDirty = true;
     people.sites.add(ResidentSite(
         cellCenter(cell.column, cell.row), _roleForKind(kind),
         mapId: cell.row * columns + cell.column));
@@ -595,19 +654,47 @@ class SettlementMap extends Component {
 
   bool paintTerrain(GridCell cell, int terrain) {
     if (terrain < 0 ||
-        terrain > 4 ||
+        terrain > 12 ||
         _buildings.any((b) => b.column == cell.column && b.row == cell.row)) {
       return false;
     }
     final key = cell.row * columns + cell.column;
     if (terrain == 4) {
-      if (_terrainOverrides.remove(key) == null) return true;
-      recentEvents.insert(0, 'Клетка карты возвращена к исходному ландшафту');
+      final changedTerrain = _terrainOverrides.remove(key) != null;
+      final changedElevation = _elevationOverrides.remove(key) != null;
+      final changedDistrict = _districtOverrides.remove(key) != null;
+      final changedRiver = _riverCells.remove(key);
+      final changed =
+          changedTerrain || changedElevation || changedDistrict || changedRiver;
+      if (changed) {
+        recentEvents.insert(0, 'Клетка карты возвращена к исходному ландшафту');
+      }
     } else {
-      if (_terrainOverrides[key] == terrain) return true;
-      _terrainOverrides[key] = terrain;
-      final name = const ['луг', 'лес', 'вода', 'холм'][terrain];
-      recentEvents.insert(0, 'На карте создан участок: $name');
+      if (terrain == 5) {
+        if (_riverCells.add(key)) {
+          recentEvents.insert(0, 'Добавлен участок русла реки');
+        }
+      } else if (terrain >= 6 && terrain <= 8) {
+        final height = terrain - 5;
+        if (_elevationOverrides[key] != height) {
+          _elevationOverrides[key] = height;
+          _terrainOverrides.remove(key);
+          _riverCells.remove(key);
+          recentEvents.insert(0, 'Высота клетки изменена: уровень $height');
+        }
+      } else if (terrain >= 9) {
+        final district = terrain - 9;
+        if (_districtOverrides[key] != district) {
+          _districtOverrides[key] = district;
+          recentEvents.insert(0, 'Клетка назначена в район ${district + 1}');
+        }
+      } else if (_terrainOverrides[key] != terrain) {
+        _terrainOverrides[key] = terrain;
+        _elevationOverrides.remove(key);
+        _riverCells.remove(key);
+        final name = const ['луг', 'лес', 'вода', 'холм'][terrain];
+        recentEvents.insert(0, 'На карте создан участок: $name');
+      }
     }
     if (recentEvents.length > 8) {
       recentEvents.removeRange(8, recentEvents.length);
@@ -666,13 +753,19 @@ class SettlementMap extends Component {
           : route.points
               .map((point) => IsometricPoint(point.dx, point.dy))
               .toList(),
-      busCapacity:
-          civilization.civicBuildings.contains('Транспортное депо') ? 12 : 4,
+      // A depot dispatches three buses with four seats each.
+      busCapacity: 4,
       onBusBoard: market.collectTransitFare,
+      busFleetProgresses: BusSchedule.fleetProgressesAt(
+        _timeOfDay * 24,
+        fleetSize: BusSchedule.fleetSize(
+          hasDepot: civilization.civicBuildings.contains('Транспортное депо'),
+        ),
+      ),
     );
     market.update(
       dt: dt,
-      residents: people.residents,
+      residents: people.localResidents,
       sites: people.sites,
       technologyLevel: civilization.technologyLevel,
       eraIndex: civilization.eraIndex,
@@ -680,7 +773,8 @@ class SettlementMap extends Component {
     );
     final cityEvents = civilization.update(
       dt: dt,
-      residents: people.residents,
+      residents: people.localResidents,
+      allResidents: people.residents,
       sites: people.sites,
       market: market,
     );
@@ -697,15 +791,15 @@ class SettlementMap extends Component {
     final result = nature.update(
       state: climate,
       dt: dt,
-      residentCount: people.residents.length,
+      residentCount: people.localResidents.length,
       food: market.food,
       farmCount: _buildings.where((building) => building.kind == 1).length,
       technologyLevel: civilization.technologyLevel,
     );
     climate = result.state;
-    market.food = math.min(result.food, market.storageCapacity);
+    market.food = math.min(result.food, market.foodStorageCapacity);
     if (result.residentMoraleDelta != 0) {
-      for (final resident in people.residents) {
+      for (final resident in people.localResidents) {
         resident.morale = (resident.morale + result.residentMoraleDelta)
             .clamp(0, 1)
             .toDouble();
@@ -721,7 +815,7 @@ class SettlementMap extends Component {
 
   void _growHousing() {
     final homes = _buildings.where((building) => building.kind == 0).length;
-    if (people.residents.length <= homes * 4 ||
+    if (people.localResidents.length <= homes * 4 ||
         market.treasury < 25 ||
         market.materials < 10) {
       return;
@@ -744,24 +838,14 @@ class SettlementMap extends Component {
     final origin = cellCenter(columns ~/ 2, rows ~/ 2);
     canvas.save();
     canvas.translate(-origin.x, -origin.y);
-    if (artwork != null) {
-      canvas.drawImageRect(
-        artwork!,
-        Rect.fromLTWH(
-            0, 0, artwork!.width.toDouble(), artwork!.height.toDouble()),
-        const Rect.fromLTWH(-884, -468, 1768, 936),
-        Paint()..filterQuality = FilterQuality.high,
-      );
-      _drawTerrain(canvas, overridesOnly: true);
-      _drawTrees(canvas, overridesOnly: true);
-      _drawFactionTerritories(canvas);
-    } else {
-      _drawTerrain(canvas);
-      _drawFactionTerritories(canvas);
-      _drawRoads(canvas);
-      _drawRiver(canvas);
-      _drawTrees(canvas);
-    }
+    _drawTerrain(canvas);
+    _drawRoads(canvas);
+    _drawRiver(canvas);
+    _drawTrees(canvas);
+    _drawFactionTerritories(canvas);
+    _drawRiverEdits(canvas);
+    _drawElevation(canvas);
+    _drawDistricts(canvas);
     final sorted = [..._buildings]
       ..sort((a, b) => (a.column + a.row).compareTo(b.column + b.row));
     final roadKeys = _buildings
@@ -769,14 +853,14 @@ class SettlementMap extends Component {
         .map((building) => building.row * columns + building.column)
         .toSet();
     for (final building in sorted) {
-      if (building.visible) _drawBuilding(canvas, building, roadKeys);
+      _drawBuilding(canvas, building, roadKeys);
     }
     _drawTraffic(canvas);
     _drawPeople(canvas);
     canvas.restore();
   }
 
-  static const _trafficRoutes = <List<Offset>>[
+  static const _demoTrafficRoutes = <List<Offset>>[
     [
       Offset(0, 352),
       Offset(170, 350),
@@ -824,14 +908,23 @@ class SettlementMap extends Component {
   ];
 
   void _drawTraffic(Canvas canvas) {
-    if (artwork == null || people.residents.length < 3) return;
-    final stage = (people.residents.length / 70).clamp(0, 1).toDouble();
+    if (people.localResidents.length < 3) return;
+    final stage = (people.localResidents.length / 70).clamp(0, 1).toDouble();
     final count = math.min(22, 2 + (stage * 20).floor());
-    final roadRoute = _connectedRoadRoute();
-    final playerRoadPoints = roadRoute
-        .map((building) => cellCenter(building.column, building.row))
-        .map((point) => Offset(point.x, point.y))
-        .toList(growable: false);
+    final commuterRoutes = _trafficRoutes;
+    final connectedRoads = _connectedRoadRoute();
+    final fallbackRoadPoints = connectedRoads.isNotEmpty
+        ? connectedRoads
+            .map((building) => cellCenter(building.column, building.row))
+            .map((point) => Offset(point.x, point.y))
+            .toList(growable: false)
+        : List<Offset>.generate(
+            columns,
+            (column) {
+              final point = cellCenter(column, 13);
+              return Offset(point.x, point.y);
+            },
+          );
     final busRoutePoints = _busRoute?.points ?? const <Offset>[];
     final colors = [
       const Color(0xffbd594a),
@@ -842,32 +935,24 @@ class SettlementMap extends Component {
     ];
     const artWidth = 1195.0, artHeight = 600.0;
     for (var i = 0; i < count; i++) {
-      final bus =
-          busRoutePoints.length > 1 ? i == 0 : stage > .68 && i % 7 == 0;
-      final usesBusStops = bus && busRoutePoints.length > 1;
-      final usesPlayerRoads = !usesBusStops && playerRoadPoints.length > 1;
-      final route = usesBusStops
-          ? busRoutePoints
-          : usesPlayerRoads
-              ? playerRoadPoints
-              : _trafficRoutes[i % _trafficRoutes.length];
+      final route = commuterRoutes.isNotEmpty
+          ? commuterRoutes[i % commuterRoutes.length]
+          : fallbackRoadPoints;
+      const followsArtwork = false;
       final direction = i.isEven ? 1.0 : -1.0;
       final cycle = (_timeOfDay * 24 * 2.4 * direction + i * 1.73) % 18;
       final progress = ((cycle + 18) % 18) / 18;
       final sample = _sampleRoute(route, progress);
-      final x = usesPlayerRoads
-          ? sample.$1.dx
-          : (sample.$1.dx / artWidth - .5) * 1768;
-      final y = usesPlayerRoads
-          ? sample.$1.dy
-          : (sample.$1.dy / artHeight - .5) * 936;
+      final x =
+          followsArtwork ? (sample.$1.dx / artWidth - .5) * 1768 : sample.$1.dx;
+      final y =
+          followsArtwork ? (sample.$1.dy / artHeight - .5) * 936 : sample.$1.dy;
       final tangentX =
-          usesPlayerRoads ? sample.$2.dx : sample.$2.dx * 1768 / artWidth;
+          followsArtwork ? sample.$2.dx * 1768 / artWidth : sample.$2.dx;
       final tangentY =
-          usesPlayerRoads ? sample.$2.dy : sample.$2.dy * 936 / artHeight;
+          followsArtwork ? sample.$2.dy * 936 / artHeight : sample.$2.dy;
       final angle = math.atan2(tangentY, tangentX);
-      final length = bus ? 28.0 : 17.0;
-      final height = bus ? 9.0 : 7.0;
+      const length = 17.0, height = 7.0;
       canvas.save();
       canvas.translate(x, y);
       canvas.rotate(angle);
@@ -879,36 +964,94 @@ class SettlementMap extends Component {
         Rect.fromCenter(center: Offset.zero, width: length, height: height),
         const Radius.circular(2),
       );
+      // Dark chassis, painted body, glazed cabin and visible wheel arches.
       canvas.drawRRect(body, Paint()..color = const Color(0xff171b1b));
       canvas.drawRRect(
-        body,
-        Paint()
-          ..color = bus ? const Color(0xffd3a84c) : colors[i % colors.length]
-          ..style = PaintingStyle.fill,
+        RRect.fromRectAndRadius(
+          Rect.fromCenter(center: Offset.zero, width: length - 1, height: height - 1),
+          const Radius.circular(2),
+        ),
+        Paint()..color = colors[i % colors.length],
       );
+      final wheelPaint = Paint()..color = const Color(0xff171b1b);
+      for (final wx in [-5.5, 5.5]) {
+        canvas.drawRRect(RRect.fromRectAndRadius(
+          Rect.fromCenter(center: Offset(wx, 3.2), width: 4.2, height: 2.5),
+          const Radius.circular(1)), wheelPaint);
+      }
       canvas.drawRRect(
         RRect.fromRectAndRadius(
           Rect.fromCenter(
-            center: Offset(bus ? -1 : 0, -1),
-            width: bus ? 16 : 8,
+            center: const Offset(0, -1),
+            width: 8,
             height: 3,
           ),
           const Radius.circular(1),
         ),
         Paint()..color = const Color(0xffb7d3d8),
       );
+      // Windshield split, rear glass and warm headlamps make cars legible at zoom.
+      canvas.drawLine(const Offset(2, -2.2), const Offset(2, 2.2),
+          Paint()..color = const Color(0xff426b78)..strokeWidth = .7);
+      canvas.drawRRect(RRect.fromRectAndRadius(
+        Rect.fromCenter(center: const Offset(-6.4, 0), width: 2.2, height: 3.5),
+        const Radius.circular(.6)), Paint()..color = const Color(0xff8bbbc2));
       final lamp = Paint()..color = const Color(0xffffe6a3);
-      canvas.drawCircle(Offset(length / 2 - 1, -1.5), .8, lamp);
-      canvas.drawCircle(Offset(length / 2 - 1, 1.5), .8, lamp);
-      if (bus) {
-        final riders =
-            people.residents.where((resident) => resident.onBus).length;
-        for (var rider = 0; rider < math.min(5, riders); rider++) {
-          canvas.drawCircle(Offset(-5 + rider * 2.5, -1), 1,
-              Paint()..color = const Color(0xffffe5ae));
-        }
-      }
+      canvas.drawCircle(Offset(length / 2 - 1, -1.5), .9, lamp);
+      canvas.drawCircle(Offset(length / 2 - 1, 1.5), .9, lamp);
+      canvas.drawCircle(Offset(-length / 2 + 1, -1.5), .65,
+          Paint()..color = const Color(0xffd95c4c));
+      canvas.drawCircle(Offset(-length / 2 + 1, 1.5), .65,
+          Paint()..color = const Color(0xffd95c4c));
       canvas.restore();
+    }
+    if (busRoutePoints.length > 1) {
+      final hour = _timeOfDay * 24;
+      final fleet = BusSchedule.fleetProgressesAt(
+        hour,
+        fleetSize: BusSchedule.fleetSize(
+          hasDepot: civilization.civicBuildings.contains('Транспортное депо'),
+        ),
+      );
+      for (var vehicleId = 0; vehicleId < fleet.length; vehicleId++) {
+        final sample = _sampleRoute(busRoutePoints, fleet[vehicleId]);
+        final angle = math.atan2(sample.$2.dy, sample.$2.dx);
+        canvas.save();
+        canvas.translate(sample.$1.dx, sample.$1.dy);
+        canvas.rotate(angle);
+        const length = 28.0, height = 9.0;
+        final body = RRect.fromRectAndRadius(
+          Rect.fromCenter(center: Offset.zero, width: length, height: height),
+          const Radius.circular(2),
+        );
+        canvas.drawOval(
+          Rect.fromCenter(
+              center: const Offset(1, 4), width: length + 3, height: 7),
+          Paint()..color = const Color(0x880b1314),
+        );
+        canvas.drawRRect(body, Paint()..color = const Color(0xffd3a84c));
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+            Rect.fromCenter(center: const Offset(-1, -1), width: 16, height: 4.5),
+            const Radius.circular(1),
+          ),
+          Paint()..color = const Color(0xffb7d3d8),
+        );
+        for (var window = -6; window <= 5; window += 4) {
+          canvas.drawLine(Offset(window.toDouble(), -3.1),
+              Offset(window.toDouble(), 1.2),
+              Paint()..color = const Color(0xff6d929a)..strokeWidth = .6);
+        }
+        for (final wx in [-9.0, 9.0]) {
+          canvas.drawCircle(Offset(wx, 4.1), 2.1,
+              Paint()..color = const Color(0xff222b2d));
+          canvas.drawCircle(Offset(wx, 4.1), .8,
+              Paint()..color = const Color(0xffb8c1bd));
+        }
+        canvas.drawCircle(const Offset(13, -1.5), 1,
+            Paint()..color = const Color(0xffffedb2));
+        canvas.restore();
+      }
     }
   }
 
@@ -977,6 +1120,85 @@ class SettlementMap extends Component {
       currentKey = previous[currentKey];
     }
     return route.reversed.toList(growable: false);
+  }
+
+  List<List<Offset>> _createTrafficRoutes() {
+    final roads = <int, _Building>{
+      for (final road in _buildings.where((building) => building.kind == 7))
+        road.row * columns + road.column: road,
+    };
+    if (roads.length < 2) return const [];
+
+    int? roadAtBuilding(_Building building) {
+      for (final (dc, dr) in const [(1, 0), (-1, 0), (0, 1), (0, -1)]) {
+        final column = building.column + dc, row = building.row + dr;
+        if (column < 0 || column >= columns || row < 0 || row >= rows) continue;
+        final key = row * columns + column;
+        if (roads.containsKey(key)) return key;
+      }
+      return null;
+    }
+
+    List<int> roadPath(int start, int destination) {
+      final queue = <int>[start];
+      final previous = <int, int?>{start: null};
+      for (var cursor = 0; cursor < queue.length; cursor++) {
+        final current = queue[cursor];
+        if (current == destination) break;
+        final row = current ~/ columns, column = current % columns;
+        for (final (dc, dr) in const [(1, 0), (-1, 0), (0, 1), (0, -1)]) {
+          final nextColumn = column + dc, nextRow = row + dr;
+          if (nextColumn < 0 ||
+              nextColumn >= columns ||
+              nextRow < 0 ||
+              nextRow >= rows) {
+            continue;
+          }
+          final next = nextRow * columns + nextColumn;
+          if (roads.containsKey(next) && !previous.containsKey(next)) {
+            previous[next] = current;
+            queue.add(next);
+          }
+        }
+      }
+      if (!previous.containsKey(destination)) return const [];
+      final path = <int>[];
+      int? current = destination;
+      while (current != null) {
+        path.add(current);
+        current = previous[current];
+      }
+      return path.reversed.toList(growable: false);
+    }
+
+    final homes = _buildings.where((building) => building.kind == 0);
+    final workplaces = _buildings.where(
+        (building) => const {1, 2, 3, 5, 6, 8, 9, 10}.contains(building.kind));
+    final routes = <List<Offset>>[];
+    for (final home in homes) {
+      final homeRoad = roadAtBuilding(home);
+      if (homeRoad == null) continue;
+      for (final workplace in workplaces) {
+        final workRoad = roadAtBuilding(workplace);
+        if (workRoad == null || workRoad == homeRoad) continue;
+        final path = roadPath(homeRoad, workRoad);
+        if (path.length < 2) continue;
+        final homeCenter = cellCenter(home.column, home.row);
+        final workCenter = cellCenter(workplace.column, workplace.row);
+        final points = <Offset>[
+          Offset(homeCenter.x, homeCenter.y),
+          for (final key in path)
+            Offset(cellCenter(roads[key]!.column, roads[key]!.row).x,
+                cellCenter(roads[key]!.column, roads[key]!.row).y),
+          Offset(workCenter.x, workCenter.y),
+        ];
+        routes
+          ..add(points)
+          ..add(points.reversed.toList(growable: false));
+        if (routes.length >= 12) return routes;
+      }
+    }
+    return routes;
   }
 
   _BusRoute? _createBusRoute() {
@@ -1155,31 +1377,173 @@ class SettlementMap extends Component {
     }
   }
 
-  void _drawRoads(Canvas canvas) {
-    final road = Paint()
-      ..color = const Color(0xff80785d)
-      ..strokeWidth = 15
+  void _drawRiverEdits(Canvas canvas) {
+    final waterEdge = Paint()
+      ..color = const Color(0xaa317f91)
+      ..strokeWidth = 19
       ..strokeCap = StrokeCap.round;
-    final edge = Paint()
-      ..color = const Color(0xffc5b688)
-      ..strokeWidth = 2;
+    final water = Paint()
+      ..color = const Color(0xff56bfd0)
+      ..strokeWidth = 11
+      ..strokeCap = StrokeCap.round;
+    for (final key in _riverCells) {
+      final column = key % columns, row = key ~/ columns;
+      final center = cellCenter(column, row);
+      for (final (dc, dr) in const [(1, 0), (0, 1)]) {
+        final nextColumn = column + dc, nextRow = row + dr;
+        if (nextColumn >= columns || nextRow >= rows) continue;
+        if (!_riverCells.contains(nextRow * columns + nextColumn)) continue;
+        final next = cellCenter(nextColumn, nextRow);
+        canvas.drawLine(
+            Offset(center.x, center.y), Offset(next.x, next.y), waterEdge);
+        canvas.drawLine(
+            Offset(center.x, center.y), Offset(next.x, next.y), water);
+      }
+      canvas.drawCircle(
+          Offset(center.x, center.y), 6, Paint()..color = water.color);
+    }
+  }
+
+  void _drawElevation(Canvas canvas) {
+    const contourColors = [
+      Color(0xaae5d19c),
+      Color(0xccd4bd85),
+      Color(0xfff0dda5),
+    ];
+    for (final entry in _elevationOverrides.entries) {
+      final column = entry.key % columns, row = entry.key ~/ columns;
+      final center = cellCenter(column, row);
+      for (var contour = 0; contour < entry.value; contour++) {
+        final inset = contour * 5.0 + 2;
+        final outline = Path()
+          ..moveTo(center.x, center.y - tileH / 2 + inset)
+          ..lineTo(center.x + tileW / 2 - inset, center.y)
+          ..lineTo(center.x, center.y + tileH / 2 - inset)
+          ..lineTo(center.x - tileW / 2 + inset, center.y)
+          ..close();
+        canvas.drawPath(
+            outline,
+            Paint()
+              ..color = contourColors[entry.value - 1]
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1.5);
+      }
+      final peak = Offset(center.x, center.y - 3.0 * entry.value);
+      canvas.drawCircle(peak, 2.5 + entry.value,
+          Paint()..color = contourColors[entry.value - 1]);
+    }
+  }
+
+  void _drawDistricts(Canvas canvas) {
+    const colors = [
+      Color(0x5574c7ff),
+      Color(0x55ffbf69),
+      Color(0x5585d69a),
+      Color(0x55d5a2ff),
+    ];
+    for (final entry in _districtOverrides.entries) {
+      final column = entry.key % columns, row = entry.key ~/ columns;
+      final center = cellCenter(column, row);
+      final diamond = Path()
+        ..moveTo(center.x, center.y - tileH / 2)
+        ..lineTo(center.x + tileW / 2, center.y)
+        ..lineTo(center.x, center.y + tileH / 2)
+        ..lineTo(center.x - tileW / 2, center.y)
+        ..close();
+      canvas.drawPath(diamond, Paint()..color = colors[entry.value]);
+      canvas.drawPath(
+          diamond,
+          Paint()
+            ..color = colors[entry.value].withAlpha(210)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.5);
+    }
+  }
+
+  void _drawRoads(Canvas canvas) {
+    // Streets are drawn as a layered system: planted verge, paved sidewalk,
+    // curb, asphalt, lane markings and pedestrian crossings. This keeps the
+    // city readable as a continuous world instead of disconnected tile icons.
+    final roadLines = <(Offset, Offset)>[];
     for (final row in [8, 13, 18]) {
       final a = cellCenter(1, row), b = cellCenter(columns - 2, row);
-      canvas.drawLine(Offset(a.x, a.y), Offset(b.x, b.y), road);
-      canvas.drawLine(Offset(a.x, a.y), Offset(b.x, b.y), edge);
+      roadLines.add((Offset(a.x, a.y), Offset(b.x, b.y)));
     }
     for (final col in [7, 13, 19]) {
       final a = cellCenter(col, 1), b = cellCenter(col, rows - 2);
-      canvas.drawLine(Offset(a.x, a.y), Offset(b.x, b.y), road);
-      canvas.drawLine(Offset(a.x, a.y), Offset(b.x, b.y), edge);
+      roadLines.add((Offset(a.x, a.y), Offset(b.x, b.y)));
     }
+    for (final (a, b) in roadLines) {
+      canvas.drawLine(a, b, Paint()
+        ..color = const Color(0xff31513b)
+        ..strokeWidth = 34
+        ..strokeCap = StrokeCap.round);
+      canvas.drawLine(a, b, Paint()
+        ..color = const Color(0xffc4b99b)
+        ..strokeWidth = 29
+        ..strokeCap = StrokeCap.round);
+      canvas.drawLine(a, b, Paint()
+        ..color = const Color(0xff777b78)
+        ..strokeWidth = 23
+        ..strokeCap = StrokeCap.round);
+      canvas.drawLine(a, b, Paint()
+        ..color = const Color(0xff565e5d)
+        ..strokeWidth = 1.2
+        ..strokeCap = StrokeCap.round);
+      // Broken center lines, evenly spaced along every street.
+      final delta = b - a;
+      final length = delta.distance;
+      final direction = delta / length;
+      for (var d = 12.0; d < length - 8; d += 25) {
+        final p1 = a + direction * d;
+        final p2 = a + direction * math.min(d + 9, length - 4).toDouble();
+        canvas.drawLine(p1, p2, Paint()
+          ..color = const Color(0xffe8d9a9)
+          ..strokeWidth = 1.4
+          ..strokeCap = StrokeCap.round);
+      }
+      // Fine curb highlights on both sides.
+      final normal = Offset(-direction.dy, direction.dx) * 13.5;
+      canvas.drawLine(a + normal, b + normal, Paint()
+        ..color = const Color(0x99f2e5c5)
+        ..strokeWidth = 1.1);
+      canvas.drawLine(a - normal, b - normal, Paint()
+        ..color = const Color(0x99f2e5c5)
+        ..strokeWidth = 1.1);
+    }
+
+    // Raised pedestrian crossings at each of the six major intersections.
+    for (final row in [8, 13, 18]) {
+      for (final col in [7, 13, 19]) {
+        final c = cellCenter(col, row);
+        for (var stripe = -3; stripe <= 3; stripe++) {
+          final offset = stripe * 3.2;
+          canvas.drawLine(
+            Offset(c.x - 10 + offset, c.y + 5 + offset * .5),
+            Offset(c.x + 10 + offset, c.y - 5 + offset * .5),
+            Paint()..color = const Color(0xfff1ead5)
+              ..strokeWidth = 2.0..strokeCap = StrokeCap.round,
+          );
+        }
+        canvas.drawCircle(Offset(c.x, c.y), 2.2,
+            Paint()..color = const Color(0xffe5c86e));
+      }
+    }
+
+    // Roundabout in the central district, with planted island and curb rings.
     final center = cellCenter(13, 13);
-    canvas.drawCircle(Offset(center.x, center.y), 21,
-        Paint()..color = const Color(0xffb7a878));
-    canvas.drawCircle(Offset(center.x, center.y), 14,
-        Paint()..color = const Color(0xff4daec2));
-    canvas.drawCircle(Offset(center.x, center.y), 5,
-        Paint()..color = const Color(0xffd9f7e8));
+    canvas.drawCircle(Offset(center.x, center.y + 2), 27,
+        Paint()..color = const Color(0xffc5b99a));
+    canvas.drawCircle(Offset(center.x, center.y), 23,
+        Paint()..color = const Color(0xff626c68));
+    canvas.drawCircle(Offset(center.x, center.y), 17,
+        Paint()..color = const Color(0xffb6c49a));
+    canvas.drawCircle(Offset(center.x, center.y - 2), 12,
+        Paint()..color = const Color(0xff397e48));
+    canvas.drawCircle(Offset(center.x - 3, center.y - 6), 5,
+        Paint()..color = const Color(0xff69a85c));
+    canvas.drawCircle(Offset(center.x + 4, center.y + 1), 3,
+        Paint()..color = const Color(0xff8ab66a));
   }
 
   void _drawRiver(Canvas canvas) {
@@ -1209,37 +1573,55 @@ class SettlementMap extends Component {
   }
 
   void _drawTrees(Canvas canvas, {bool overridesOnly = false}) {
+    final positions = <Offset>[];
     if (overridesOnly) {
       for (final entry in _terrainOverrides.entries) {
         if (entry.value != 1) continue;
-        final col = entry.key % columns, row = entry.key ~/ columns;
-        final c = cellCenter(col, row);
-        canvas.drawCircle(Offset(c.x - 8, c.y - 4), 8,
-            Paint()..color = const Color(0xff387b3c));
-        canvas.drawCircle(Offset(c.x + 6, c.y + 2), 7,
-            Paint()..color = const Color(0xff519348));
-        canvas.drawCircle(
-            Offset(c.x, c.y - 1), 6, Paint()..color = const Color(0xff77a951));
+        final c = cellCenter(entry.key % columns, entry.key ~/ columns);
+        positions.add(Offset(c.x, c.y));
       }
-      return;
+    } else {
+      for (var row = 1; row < rows; row += 2) {
+        for (var col = 1; col < columns; col += 2) {
+          final key = row * columns + col;
+          final override = _terrainOverrides[key];
+          if (override != null && override != 1) continue;
+          if ((col * 7 + row * 11) % 13 < 5 || col > 22) continue;
+          // Keep the main avenues and building footprints clear.
+          if ([8, 13, 18].contains(row) || [7, 13, 19].contains(col)) continue;
+          if (_buildings.any((b) => (b.column - col).abs() <= 1 &&
+              (b.row - row).abs() <= 1 && b.kind != 7)) continue;
+          final c = cellCenter(col, row);
+          positions.add(Offset(c.x, c.y));
+        }
+      }
     }
-    for (var row = 1; row < rows; row += 3) {
-      for (var col = 1; col < columns; col += 3) {
-        final override = _terrainOverrides[row * columns + col];
-        if (override != null && override != 1) continue;
-        if ((col * 3 + row * 5) % 7 < 3 || col > 22) continue;
-        final c = cellCenter(col, row);
-        canvas.drawOval(
-            Rect.fromCenter(
-                center: Offset(c.x + 3, c.y + 5), width: 23, height: 10),
-            Paint()..color = const Color(0x550f241b));
-        canvas.drawRect(Rect.fromLTWH(c.x - 2, c.y - 10, 4, 15),
-            Paint()..color = const Color(0xff72563b));
-        canvas.drawCircle(Offset(c.x, c.y - 14), 10,
-            Paint()..color = const Color(0xff316c3b));
-        canvas.drawCircle(Offset(c.x - 4, c.y - 17), 5,
-            Paint()..color = const Color(0xff559148));
-      }
+    for (var i = 0; i < positions.length; i++) {
+      final p = positions[i];
+      final scale = .78 + (i % 4) * .12;
+      final crown = 8.0 * scale;
+      canvas.drawOval(Rect.fromCenter(
+        center: Offset(p.dx + 3, p.dy + 7), width: 24 * scale, height: 9 * scale),
+        Paint()..color = const Color(0x550b1c13));
+      // Trunk and two visible branches give the tree a real 3D silhouette.
+      canvas.drawRect(Rect.fromLTWH(p.dx - 2 * scale, p.dy - 12 * scale,
+          4 * scale, 17 * scale), Paint()..color = const Color(0xff725039));
+      canvas.drawLine(Offset(p.dx, p.dy - 8 * scale),
+          Offset(p.dx - 6 * scale, p.dy - 16 * scale),
+          Paint()..color = const Color(0xff806044)..strokeWidth = 2 * scale);
+      canvas.drawLine(Offset(p.dx, p.dy - 8 * scale),
+          Offset(p.dx + 6 * scale, p.dy - 17 * scale),
+          Paint()..color = const Color(0xff806044)..strokeWidth = 2 * scale);
+      canvas.drawCircle(Offset(p.dx + 1, p.dy - 17 * scale), crown + 2,
+          Paint()..color = const Color(0xff285d36));
+      canvas.drawCircle(Offset(p.dx - 5 * scale, p.dy - 19 * scale), crown * .72,
+          Paint()..color = const Color(0xff397c40));
+      canvas.drawCircle(Offset(p.dx + 7 * scale, p.dy - 20 * scale), crown * .68,
+          Paint()..color = const Color(0xff4a9149));
+      canvas.drawCircle(Offset(p.dx - 1 * scale, p.dy - 24 * scale), crown * .58,
+          Paint()..color = const Color(0xff70a952));
+      canvas.drawCircle(Offset(p.dx - 4 * scale, p.dy - 25 * scale), 2.5 * scale,
+          Paint()..color = const Color(0x99c0d77a));
     }
   }
 
@@ -1381,6 +1763,10 @@ class SettlementMap extends Component {
         }
       }
     }
+    if ({0, 2, 3, 5, 6}.contains(b.kind)) {
+      _drawDetailedBuilding(canvas, c, b.kind);
+      return;
+    }
     final palette = [
       const Color(0xffe4d2a5),
       const Color(0xffc67e4b),
@@ -1436,32 +1822,184 @@ class SettlementMap extends Component {
         Paint()..color = const Color(0xff75c4ce));
   }
 
+
+  void _drawDetailedBuilding(Canvas canvas, Offset c, int kind) {
+    final isTower = kind == 0 || kind == 6;
+    final floors = kind == 0 ? 5 : kind == 6 ? 4 : kind == 3 ? 3 : 2;
+    final height = floors * 10.0;
+    final width = kind == 3 ? 25.0 : 29.0;
+    final depth = 17.0;
+    final base = switch (kind) {
+      2 => const Color(0xffd7b77e),
+      3 => const Color(0xffc8d0c9),
+      5 => const Color(0xffd5c7a9),
+      6 => const Color(0xffd7d5c8),
+      _ => const Color(0xffe6ddc9),
+    };
+    final leftWall = Path()
+      ..moveTo(c.dx - width / 2, c.dy - 8)
+      ..lineTo(c.dx, c.dy + depth / 2 - 8)
+      ..lineTo(c.dx, c.dy - height + depth / 2 - 8)
+      ..lineTo(c.dx - width / 2, c.dy - height - 8)
+      ..close();
+    final rightWall = Path()
+      ..moveTo(c.dx, c.dy + depth / 2 - 8)
+      ..lineTo(c.dx + width / 2, c.dy - 8)
+      ..lineTo(c.dx + width / 2, c.dy - height - 8)
+      ..lineTo(c.dx, c.dy - height + depth / 2 - 8)
+      ..close();
+    final roof = Path()
+      ..moveTo(c.dx - width / 2, c.dy - height - 8)
+      ..lineTo(c.dx, c.dy - height - depth / 2 - 13)
+      ..lineTo(c.dx + width / 2, c.dy - height - 8)
+      ..lineTo(c.dx, c.dy - height + depth / 2 - 8)
+      ..close();
+
+    canvas.drawOval(
+      Rect.fromCenter(
+        center: Offset(c.dx + 3, c.dy + 3),
+        width: width + 27,
+        height: depth + 13,
+      ),
+      Paint()..color = const Color(0x550b1711),
+    );
+    final paving = Path()
+      ..moveTo(c.dx, c.dy + 2)
+      ..lineTo(c.dx + width / 2 + 7, c.dy - depth / 2 + 2)
+      ..lineTo(c.dx + width / 2 + 7, c.dy - depth / 2 + 7)
+      ..lineTo(c.dx, c.dy + 7)
+      ..lineTo(c.dx - width / 2 - 7, c.dy - depth / 2 + 7)
+      ..lineTo(c.dx - width / 2 - 7, c.dy - depth / 2 + 2)
+      ..close();
+    canvas.drawPath(paving, Paint()..color = const Color(0xffa9a28b));
+    canvas.drawPath(leftWall, Paint()..color = base);
+    canvas.drawPath(
+      rightWall,
+      Paint()..color = Color.lerp(base, const Color(0xff303a3a), .20)!,
+    );
+    final windowPaint = Paint()..color = const Color(0xff6fabb8);
+    final windowEdge = Paint()
+      ..color = const Color(0xfff3e8d2)
+      ..strokeWidth = 1.2;
+    for (var floor = 0; floor < floors; floor++) {
+      final y = c.dy - 13 - floor * 10.0;
+      for (var col = 0; col < 2; col++) {
+        final x = c.dx - 11 + col * 8;
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+            Rect.fromLTWH(x - 2, y - 3, 4.5, 6),
+            const Radius.circular(1),
+          ),
+          windowPaint,
+        );
+        canvas.drawLine(Offset(x, y + 3), Offset(x, y - 3),
+            windowEdge);
+      }
+      for (var col = 0; col < 2; col++) {
+        final x = c.dx + 5 + col * 7;
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+            Rect.fromLTWH(x - 2, y - 3, 4.5, 6),
+            const Radius.circular(1),
+          ),
+          Paint()..color = const Color(0xff578d9b),
+        );
+      }
+    }
+    canvas.drawPath(roof, Paint()..color = switch (kind) {
+      2 => const Color(0xff547d83),
+      3 => const Color(0xffa6a69a),
+      5 => const Color(0xff586f83),
+      6 => const Color(0xffb9b8a9),
+      _ => const Color(0xff9a5542),
+    });
+    canvas.drawPath(
+      roof,
+      Paint()
+        ..color = const Color(0x66514b3e)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1,
+    );
+    // Rooftop equipment, parapet and tiny terraces add depth to the silhouette.
+    final roofTop = c.dy - height - 13;
+    canvas.drawRRect(RRect.fromRectAndRadius(
+      Rect.fromLTWH(c.dx - 5, roofTop - 4, 10, 5), const Radius.circular(1)),
+      Paint()..color = const Color(0xff7d8985));
+    canvas.drawRect(Rect.fromLTWH(c.dx - 3, roofTop - 3, 6, 2),
+        Paint()..color = const Color(0xffb9c3bd));
+    canvas.drawLine(Offset(c.dx - width / 2 + 3, c.dy - height - 8),
+        Offset(c.dx, c.dy - height - depth / 2 - 13),
+        Paint()..color = const Color(0x66ffffff)..strokeWidth = .8);
+    if (floors >= 3) {
+      for (var floor = 1; floor < floors; floor++) {
+        final balconyY = c.dy - 13 - floor * 10.0 + 4;
+        canvas.drawLine(Offset(c.dx - 12, balconyY),
+            Offset(c.dx - 3, balconyY),
+            Paint()..color = const Color(0xffd7d1bd)..strokeWidth = 1.3);
+        canvas.drawLine(Offset(c.dx + 5, balconyY),
+            Offset(c.dx + 13, balconyY),
+            Paint()..color = const Color(0xffd7d1bd)..strokeWidth = 1.3);
+      }
+    }
+    if (isTower) {
+      canvas.drawRect(
+        Rect.fromLTWH(c.dx - 2, c.dy - height - 18, 4, 7),
+        Paint()..color = const Color(0xff8a8b82),
+      );
+    }
+    canvas.drawRect(
+      Rect.fromLTWH(c.dx - 3, c.dy - 9, 6, 11),
+      Paint()..color = const Color(0xff654a36),
+    );
+    canvas.drawLine(
+      Offset(c.dx - width / 2 + 2, c.dy - 8),
+      Offset(c.dx, c.dy + depth / 2 - 8),
+      Paint()
+        ..color = const Color(0x55ffffff)
+        ..strokeWidth = 1,
+    );
+  }
+
   void _drawPeople(Canvas canvas) {
-    for (final person in people.residents) {
+    for (final person in people.localResidents) {
       if (person.onBus) continue;
       final p = person.position;
-      final bob = math.sin(person.walkPhase) * 1.5;
+      final phase = person.walkPhase;
+      final stride = math.sin(phase) * 2.2;
+      final bob = math.sin(phase * 2).abs() * 1.1;
       final color = switch (person.personality) {
         'builder' => const Color(0xffbf8c59),
         'explorer' => const Color(0xff73ad86),
         'mystic' => const Color(0xffa68bcc),
         _ => const Color(0xffe4bf8e),
       };
-      canvas.drawOval(
-          Rect.fromCenter(
-              center: Offset(p.x + 2, p.y + 4), width: 7, height: 3),
-          Paint()..color = const Color(0x550d1714));
-      canvas.drawCircle(Offset(p.x, p.y - 3 + bob), 2.6,
-          Paint()..color = const Color(0xffffd085));
-      canvas.drawLine(
-          Offset(p.x, p.y),
-          Offset(p.x, p.y + 4 + bob),
-          Paint()
-            ..color = color
-            ..strokeWidth = 2.2
-            ..strokeCap = StrokeCap.round);
+      canvas.drawOval(Rect.fromCenter(
+        center: Offset(p.x + 1, p.y + 5), width: 8, height: 3),
+        Paint()..color = const Color(0x660d1714));
+      // Legs alternate with the walking cycle; arms swing in opposition.
+      final hip = Offset(p.x, p.y + 1 + bob);
+      final legPaint = Paint()..color = const Color(0xff293b48)
+        ..strokeWidth = 1.8..strokeCap = StrokeCap.round;
+      canvas.drawLine(hip, Offset(p.x - 1.8 - stride, p.y + 5 + bob), legPaint);
+      canvas.drawLine(hip, Offset(p.x + 1.8 + stride, p.y + 5 + bob), legPaint);
+      canvas.drawLine(Offset(p.x, p.y - 1 + bob),
+          Offset(p.x - 3 - stride * .55, p.y + 2 + bob),
+          Paint()..color = color..strokeWidth = 1.5..strokeCap = StrokeCap.round);
+      canvas.drawLine(Offset(p.x, p.y - 1 + bob),
+          Offset(p.x + 3 + stride * .55, p.y + 2 + bob),
+          Paint()..color = color..strokeWidth = 1.5..strokeCap = StrokeCap.round);
+      canvas.drawRRect(RRect.fromRectAndRadius(
+        Rect.fromLTWH(p.x - 2.1, p.y - 5 + bob, 4.2, 7),
+        const Radius.circular(1.5)), Paint()..color = color);
+      canvas.drawCircle(Offset(p.x, p.y - 7 + bob), 2.1,
+          Paint()..color = const Color(0xffffd39a));
+      canvas.drawArc(Rect.fromCircle(center: Offset(p.x, p.y - 7.5 + bob), radius: 2.3),
+          math.pi, math.pi, false,
+          Paint()..color = const Color(0xff514237)..strokeWidth = 1.2
+            ..style = PaintingStyle.stroke);
     }
   }
+
 }
 
 class _TopBar extends StatelessWidget {
@@ -1681,6 +2219,66 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
         ),
       );
 
+  void _configureStorage(MarketState market) {
+    const resources = [
+      (StoredResource.food, 'Еда'),
+      (StoredResource.fish, 'Рыба'),
+      (StoredResource.meat, 'Мясо'),
+      (StoredResource.materials, 'Материалы'),
+      (StoredResource.goods, 'Товары'),
+    ];
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Доли складских ёмкостей'),
+          content: SizedBox(
+            width: 380,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'Меняйте приоритеты хранения. Общий объём складов останется прежним.',
+                  ),
+                  for (final (resource, label) in resources)
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '$label · ${(market.storageShare(resource) * 100).round()}%',
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        Slider(
+                          value: market.storageShare(resource).clamp(.01, .8),
+                          min: .01,
+                          max: .8,
+                          divisions: 16,
+                          label:
+                              '${(market.storageShare(resource) * 100).round()}%',
+                          onChanged: (value) {
+                            setDialogState(
+                                () => market.setStorageShare(resource, value));
+                            widget.game.refreshFromMap();
+                          },
+                        ),
+                      ],
+                    ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Готово'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (!widget.game.isLoaded) {
@@ -1689,7 +2287,7 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
     }
     final map = widget.game.map;
     final civ = map.civilization;
-    final people = map.people.residents;
+    final people = map.people.localResidents;
     final economy = map.market;
     final averageHealth = people.isEmpty
         ? 100
@@ -1782,8 +2380,13 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
           _line(
               'Вместимость автобуса',
               civ.civicBuildings.contains('Транспортное депо')
-                  ? '12 мест · депо построено'
-                  : '4 места · депо увеличит вместимость'),
+                  ? '3 автобуса · 12 мест суммарно'
+                  : '1 автобус · 4 места'),
+          _line(
+              'Расписание автобусов',
+              BusSchedule.isOperatingAt(map._timeOfDay * 24)
+                  ? '06:00–22:00 · круг каждые 2 игровых часа'
+                  : 'перерыв · рейсы с 06:00 до 22:00'),
           _line('Мировая торговля', '${civ.worldTradeVolume.floor()}'),
           _line('Фермы · обрабатываемые поля',
               '${map._buildings.where((b) => b.kind == 1).length} · ${map._buildings.where((b) => b.kind == 1).length * 4}'),
@@ -1791,8 +2394,14 @@ class _CivilizationPanelState extends State<_CivilizationPanel> {
               '${map.climate.nature['harvests']?.floor() ?? 0} · ${map.climate.nature['soil']?.round() ?? 0}%'),
           _line('Рыба · мясо за производственный цикл',
               '${economy.fishProduction.toStringAsFixed(1)} · ${economy.meatProduction.toStringAsFixed(1)}'),
-          _line('Склады · вместимость каждого ресурса',
-              '${map._buildings.where((b) => b.kind == 10).length} · ${economy.storageCapacity.floor()}'),
+          _line('Склады · занято / общий объём',
+              '${map._buildings.where((b) => b.kind == 10).length} · ${map.market.storedResources.floor()} / ${economy.storageCapacity.floor()}'),
+          _line('Еда · рыба · мясо',
+              '${economy.food.floor()}/${economy.foodStorageCapacity.floor()} · ${economy.fishStock.floor()}/${economy.fishStorageCapacity.floor()} · ${economy.meatStock.floor()}/${economy.meatStorageCapacity.floor()}'),
+          _line('Материалы · товары',
+              '${economy.materials.floor()}/${economy.materialStorageCapacity.floor()} · ${economy.goods.floor()}/${economy.goodsStorageCapacity.floor()}'),
+          _action('Настроить доли складских ёмкостей',
+              () => _configureStorage(economy)),
           _line('Открытые поселения', '${civ.foundedSettlements}'),
           _line('Переселения', '${civ.migrations}'),
         ],
@@ -2308,6 +2917,16 @@ class _BuildBar extends StatelessWidget {
               PopupMenuItem(value: 2, child: Text('🌊 Вода')),
               PopupMenuItem(value: 3, child: Text('⛰️ Холм')),
               PopupMenuItem(value: 4, child: Text('↩️ Исходный ландшафт')),
+              PopupMenuDivider(),
+              PopupMenuItem(value: 5, child: Text('〰️ Русло реки')),
+              PopupMenuItem(value: 6, child: Text('▱ Высота: низкая')),
+              PopupMenuItem(value: 7, child: Text('▰ Высота: средняя')),
+              PopupMenuItem(value: 8, child: Text('▲ Высота: высокая')),
+              PopupMenuDivider(),
+              PopupMenuItem(value: 9, child: Text('🔵 Район 1')),
+              PopupMenuItem(value: 10, child: Text('🟠 Район 2')),
+              PopupMenuItem(value: 11, child: Text('🟢 Район 3')),
+              PopupMenuItem(value: 12, child: Text('🟣 Район 4')),
             ],
           ),
         ]),

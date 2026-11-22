@@ -33,8 +33,9 @@ class NatureSimulation {
     var moraleDelta = 0.0;
     final events = <String>[];
 
-    if (seasonTimer >= 55) {
+    while (seasonTimer >= 55) {
       seasonTimer -= 55;
+      final previousSeason = season;
       season = (season + 1) % 4;
       if (season == 0) year++;
       if (season == 1) {
@@ -42,7 +43,7 @@ class NatureSimulation {
             max(0.35, nature['soil']! / 100) * (weather == 'Засуха' ? 0.35 : 1);
         final harvest = max(
             1,
-            (residentCount * 0.08 * yieldBoost +
+            (residentCount * 0.16 * yieldBoost +
                     farmCount *
                         1.2 *
                         yieldBoost *
@@ -51,7 +52,7 @@ class NatureSimulation {
         nextFood += harvest;
         nature['harvests'] = nature['harvests']! + 1;
         events.add(
-            'Весенний посев и ранний сбор с $farmCount ферм: +$harvest еды');
+            'Весенний посев и ранний урожай с $farmCount ферм: +$harvest еды');
         nature['cropProgress'] = farmCount > 0 ? 0.18 : 0;
       } else if (season == 2) {
         final soilYield = max(0.3, nature['soil']! / 100);
@@ -62,7 +63,7 @@ class NatureSimulation {
             weatherYield *
             (1 + (technologyLevel - 1) * .12);
         final harvest =
-            max(1, (residentCount * 0.08 * soilYield + farmHarvest).floor());
+            max(1, (residentCount * 0.16 * soilYield + farmHarvest).floor());
         nextFood += harvest;
         nature['harvests'] = nature['harvests']! + 1;
         events.add('Осенний сбор урожая с $farmCount ферм: +$harvest еды');
@@ -74,7 +75,7 @@ class NatureSimulation {
           min(100.0, nature['forest']! + (season == 0 ? 1.5 : 0.4));
       nature['wildlife'] =
           min(100.0, nature['wildlife']! + (season == 0 ? 1 : 0.2));
-      if (season == 3) {
+      if (previousSeason == 3) {
         final winterCost = max(1, (residentCount * 0.08).ceil());
         nextFood = max(0.0, nextFood - winterCost.toDouble());
         if (nextFood < residentCount * 0.12) {
