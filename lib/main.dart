@@ -48,6 +48,7 @@ class _SettlementScreenState extends State<SettlementScreen>
     with WidgetsBindingObserver {
   late final SettlementGame game;
   double _previousScale = 1;
+  double _previousRotation = 0;
   int _selectedTool = 0;
 
   @override
@@ -78,13 +79,21 @@ class _SettlementScreenState extends State<SettlementScreen>
               Positioned.fill(
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  onScaleStart: (_) => _previousScale = 1,
+                  onScaleStart: (_) {
+                    _previousScale = 1;
+                    _previousRotation = 0;
+                  },
                   onScaleUpdate: (details) {
                     final factor = details.scale / _previousScale;
                     _previousScale = details.scale;
                     game.pan(
                         details.focalPointDelta.dx, details.focalPointDelta.dy);
-                    if (details.pointerCount > 1) game.zoom(factor);
+                    if (details.pointerCount > 1) {
+                      game.zoom(factor);
+                      final rotationDelta = details.rotation - _previousRotation;
+                      _previousRotation = details.rotation;
+                      game.rotate(rotationDelta);
+                    }
                   },
                   onTapUp: (details) {
                     if (game.placeAtScreen(
@@ -239,13 +248,25 @@ class SettlementGame extends FlameGame {
 
   void pan(double dx, double dy) {
     final zoom = camera.viewfinder.zoom;
-    camera.viewfinder.position.add(Vector2(-dx / zoom, -dy / zoom));
+    final angle = -camera.viewfinder.angle;
+    final worldDx = dx * math.cos(angle) - dy * math.sin(angle);
+    final worldDy = dx * math.sin(angle) + dy * math.cos(angle);
+    camera.viewfinder.position.add(Vector2(-worldDx / zoom, -worldDy / zoom));
   }
 
   void zoom(double factor) {
     if (factor.isFinite && factor > 0) {
       camera.viewfinder.zoom =
           (camera.viewfinder.zoom * factor).clamp(.45, 2.2);
+    }
+  }
+
+  /// Rotates the isometric world with a two-finger twist gesture.
+  void rotate(double radians) {
+    if (radians.isFinite) {
+      camera.viewfinder.angle = (camera.viewfinder.angle + radians)
+          .clamp(-math.pi, math.pi)
+          .toDouble();
     }
   }
 
@@ -287,10 +308,13 @@ class SettlementGame extends FlameGame {
   bool placeAtScreen(Offset point, int kind) {
     if (!isLoaded) return false;
     final zoom = camera.viewfinder.zoom;
-    final worldX =
-        camera.viewfinder.position.x + (point.dx - size.x / 2) / zoom;
-    final worldY =
-        camera.viewfinder.position.y + (point.dy - size.y / 2) / zoom;
+    final screenDx = (point.dx - size.x / 2) / zoom;
+    final screenDy = (point.dy - size.y / 2) / zoom;
+    final angle = -camera.viewfinder.angle;
+    final worldX = camera.viewfinder.position.x +
+        screenDx * math.cos(angle) - screenDy * math.sin(angle);
+    final worldY = camera.viewfinder.position.y +
+        screenDx * math.sin(angle) + screenDy * math.cos(angle);
     final origin =
         map.cellCenter(SettlementMap.columns ~/ 2, SettlementMap.rows ~/ 2);
     final cell = IsometricGrid(
@@ -330,6 +354,17 @@ class _BusRoute {
   final Map<int, double> stopProgress;
 }
 
+/// Runtime state for one commuter car. Progress is measured along its route,
+/// so braking and queueing affect the actual vehicle rather than its artwork.
+class _TrafficVehicle {
+  _TrafficVehicle({required this.routeIndex, required this.progress, required this.speed});
+  final int routeIndex;
+  double progress;
+  final double speed;
+  bool stoppedAtSignal = false;
+  bool queued = false;
+}
+
 class SettlementMap extends Component {
   SettlementMap({this.artwork});
 
@@ -365,9 +400,12 @@ class SettlementMap extends Component {
   bool _busRouteDirty = true;
   List<List<Offset>> _cachedTrafficRoutes = const [];
   bool _trafficRoutesDirty = true;
+  final List<_TrafficVehicle> _trafficVehicles = [];
   double _timeOfDay = .35;
+  double _signalClock = 0;
   double _housingGrowthTimer = 0;
   final List<String> recentEvents = [];
+  final Map<int, double> _constructionProgress = {};
   Map<String, dynamic>? legacyHtmlSave;
 
   List<ResidentSite> _defaultSites() => [
@@ -431,6 +469,7 @@ class SettlementMap extends Component {
     if (_trafficRoutesDirty) {
       _cachedTrafficRoutes = _createTrafficRoutes();
       _trafficRoutesDirty = false;
+      _trafficVehicles.clear();
     }
     return _cachedTrafficRoutes;
   }
@@ -642,6 +681,7 @@ class SettlementMap extends Component {
     }
     market.materials -= cost;
     _buildings.add(_Building(cell.column, cell.row, kind, visible: true));
+    _constructionProgress[key] = 0;
     _trafficRoutesDirty = true;
     people.sites.add(ResidentSite(
         cellCenter(cell.column, cell.row), _roleForKind(kind),
@@ -739,6 +779,17 @@ class SettlementMap extends Component {
   @override
   void update(double dt) {
     _timeOfDay = (_timeOfDay + dt / 180) % 1;
+    _signalClock = (_signalClock + dt) % 18;
+    _updateTraffic(dt);
+    // Newly placed buildings rise from their foundations over 2.4 seconds.
+    for (final key in _constructionProgress.keys.toList()) {
+      final next = (_constructionProgress[key]! + dt / 2.4).clamp(0, 1).toDouble();
+      if (next >= 1) {
+        _constructionProgress.remove(key);
+      } else {
+        _constructionProgress[key] = next;
+      }
+    }
     _housingGrowthTimer += dt;
     final hour = (_timeOfDay * 24).floor();
     final route = _busRoute;
@@ -826,6 +877,7 @@ class SettlementMap extends Component {
         market.treasury -= 25;
         market.materials -= 10;
         _buildings.add(_Building(column, row, 0, visible: true));
+        _constructionProgress[row * columns + column] = 0;
         people.sites.add(ResidentSite(cellCenter(column, row), 'дом'));
         recentEvents.insert(0, '🏘️ Город автоматически расширил жилой район');
         return;
@@ -853,78 +905,132 @@ class SettlementMap extends Component {
         .map((building) => building.row * columns + building.column)
         .toSet();
     for (final building in sorted) {
-      _drawBuilding(canvas, building, roadKeys);
+      final key = building.row * columns + building.column;
+      final progress = _constructionProgress[key];
+      if (progress != null) {
+        final center = cellCenter(building.column, building.row);
+        canvas.save();
+        canvas.translate(center.x, center.y);
+        canvas.scale(.55 + .45 * progress, .18 + .82 * progress);
+        canvas.translate(-center.x, -center.y);
+        _drawBuilding(canvas, building, roadKeys);
+        canvas.restore();
+        _drawConstructionSite(canvas, Offset(center.x, center.y), progress);
+      } else {
+        _drawBuilding(canvas, building, roadKeys);
+      }
     }
     _drawTraffic(canvas);
+    _drawTrafficSignals(canvas);
     _drawPeople(canvas);
+    _drawNightAtmosphere(canvas);
     canvas.restore();
   }
 
-  static const _demoTrafficRoutes = <List<Offset>>[
-    [
-      Offset(0, 352),
-      Offset(170, 350),
-      Offset(360, 362),
-      Offset(560, 395),
-      Offset(790, 455),
-      Offset(1010, 505),
-      Offset(1195, 566),
-    ],
-    [
-      Offset(0, 276),
-      Offset(165, 256),
-      Offset(330, 274),
-      Offset(480, 326),
-      Offset(620, 360),
-      Offset(815, 364),
-      Offset(1015, 335),
-      Offset(1195, 300),
-    ],
-    [
-      Offset(430, 300),
-      Offset(565, 286),
-      Offset(700, 250),
-      Offset(825, 194),
-      Offset(940, 132),
-      Offset(1048, 96),
-    ],
-    [
-      Offset(310, 170),
-      Offset(420, 235),
-      Offset(520, 315),
-      Offset(630, 388),
-      Offset(760, 455),
-      Offset(900, 504),
-    ],
-    [
-      Offset(1195, 414),
-      Offset(1040, 405),
-      Offset(900, 394),
-      Offset(760, 376),
-      Offset(625, 350),
-      Offset(490, 320),
-      Offset(350, 302),
-    ],
-  ];
+
+  List<Offset> get _trafficSignalCenters {
+    final centers = <Offset>[];
+    final keys = <int>{};
+    for (final (column, row) in const [
+      (7, 8), (13, 8), (19, 8),
+      (7, 13), (13, 13), (19, 13),
+      (7, 18), (13, 18), (19, 18),
+    ]) {
+      keys.add(row * columns + column);
+    }
+    for (final road in _buildings.where((b) => b.kind == 7)) {
+      final degree = const [(1, 0), (-1, 0), (0, 1), (0, -1)]
+          .where((d) => _buildings.any((other) => other.kind == 7 &&
+              other.column == road.column + d.$1 && other.row == road.row + d.$2))
+          .length;
+      if (degree >= 3) keys.add(road.row * columns + road.column);
+    }
+    for (final key in keys) {
+      final center = cellCenter(key % columns, key ~/ columns);
+      centers.add(Offset(center.x, center.y));
+    }
+    return centers;
+  }
+
+  bool _signalAllows(Offset direction) {
+    final phase = _signalClock;
+    final amber = (phase >= 7 && phase < 9) || (phase >= 16 && phase < 18);
+    if (amber) return false; // amber is a clearance phase, not permission to enter
+    final greenAxis = phase < 7 ? 0 : 1;
+    // In the isometric grid, the two road axes have opposite dx*dy signs.
+    final vehicleAxis = direction.dx * direction.dy >= 0 ? 0 : 1;
+    return vehicleAxis == greenAxis;
+  }
+
+  void _updateTraffic(double dt) {
+    final routes = _trafficRoutes;
+    final stage = (people.localResidents.length / 70).clamp(0, 1).toDouble();
+    final targetCount = people.localResidents.length < 3 || routes.isEmpty
+        ? 0
+        : math.min(22, 2 + (stage * 20).floor());
+    while (_trafficVehicles.length > targetCount) {
+      _trafficVehicles.removeLast();
+    }
+    while (_trafficVehicles.length < targetCount) {
+      final index = _trafficVehicles.length;
+      _trafficVehicles.add(_TrafficVehicle(
+        routeIndex: index % routes.length,
+        progress: ((index * .173) % 1).toDouble(),
+        speed: .0145 + (index % 4) * .00065,
+      ));
+    }
+    final signals = _trafficSignalCenters;
+    for (var i = 0; i < _trafficVehicles.length; i++) {
+      final vehicle = _trafficVehicles[i];
+      final route = routes[vehicle.routeIndex];
+      final current = _sampleRoute(route, vehicle.progress);
+      vehicle.stoppedAtSignal = false;
+      vehicle.queued = false;
+
+      // Look a short distance ahead along the route for the next junction.
+      Offset? nextSignal;
+      var nearestDistance = double.infinity;
+      for (var step = 1; step <= 32; step++) {
+        final lookAhead = (vehicle.progress + step * .00075) % 1;
+        final ahead = _sampleRoute(route, lookAhead).$1;
+        for (final signal in signals) {
+          final distance = (signal - ahead).distance;
+          if (distance < 13 && distance < nearestDistance) {
+            nearestDistance = distance;
+            nextSignal = signal;
+          }
+        }
+        if (nextSignal != null) break;
+      }
+
+      var shouldStop = false;
+      if (nextSignal != null && (nextSignal - current.$1).distance < 39) {
+        shouldStop = !_signalAllows(current.$2);
+      }
+
+      // A following car keeps a safe gap to the nearest car ahead on the
+      // same route. Circular distance handles closed commuter loops.
+      var nearestGap = 1.0;
+      for (var otherIndex = 0; otherIndex < _trafficVehicles.length; otherIndex++) {
+        if (otherIndex == i) continue;
+        final other = _trafficVehicles[otherIndex];
+        if (other.routeIndex != vehicle.routeIndex) continue;
+        final gap = (other.progress - vehicle.progress + 1) % 1;
+        if (gap > .0001 && gap < nearestGap) nearestGap = gap;
+      }
+      if (nearestGap < .012) {
+        shouldStop = true;
+        vehicle.queued = true;
+      }
+      vehicle.stoppedAtSignal = shouldStop && !vehicle.queued;
+      if (!shouldStop) {
+        vehicle.progress = (vehicle.progress + vehicle.speed * dt) % 1;
+      }
+    }
+  }
 
   void _drawTraffic(Canvas canvas) {
-    if (people.localResidents.length < 3) return;
-    final stage = (people.localResidents.length / 70).clamp(0, 1).toDouble();
-    final count = math.min(22, 2 + (stage * 20).floor());
     final commuterRoutes = _trafficRoutes;
-    final connectedRoads = _connectedRoadRoute();
-    final fallbackRoadPoints = connectedRoads.isNotEmpty
-        ? connectedRoads
-            .map((building) => cellCenter(building.column, building.row))
-            .map((point) => Offset(point.x, point.y))
-            .toList(growable: false)
-        : List<Offset>.generate(
-            columns,
-            (column) {
-              final point = cellCenter(column, 13);
-              return Offset(point.x, point.y);
-            },
-          );
     final busRoutePoints = _busRoute?.points ?? const <Offset>[];
     final colors = [
       const Color(0xffbd594a),
@@ -933,24 +1039,16 @@ class SettlementMap extends Component {
       const Color(0xff79966e),
       const Color(0xff514c48),
     ];
-    const artWidth = 1195.0, artHeight = 600.0;
-    for (var i = 0; i < count; i++) {
-      final route = commuterRoutes.isNotEmpty
-          ? commuterRoutes[i % commuterRoutes.length]
-          : fallbackRoadPoints;
-      const followsArtwork = false;
-      final direction = i.isEven ? 1.0 : -1.0;
-      final cycle = (_timeOfDay * 24 * 2.4 * direction + i * 1.73) % 18;
-      final progress = ((cycle + 18) % 18) / 18;
-      final sample = _sampleRoute(route, progress);
-      final x =
-          followsArtwork ? (sample.$1.dx / artWidth - .5) * 1768 : sample.$1.dx;
-      final y =
-          followsArtwork ? (sample.$1.dy / artHeight - .5) * 936 : sample.$1.dy;
-      final tangentX =
-          followsArtwork ? sample.$2.dx * 1768 / artWidth : sample.$2.dx;
-      final tangentY =
-          followsArtwork ? sample.$2.dy * 936 / artHeight : sample.$2.dy;
+    for (var i = 0; i < _trafficVehicles.length; i++) {
+      final vehicle = _trafficVehicles[i];
+      if (commuterRoutes.isEmpty || vehicle.routeIndex >= commuterRoutes.length) continue;
+      final sample = _sampleRoute(commuterRoutes[vehicle.routeIndex], vehicle.progress);
+      final tangentX = sample.$2.dx;
+      final tangentY = sample.$2.dy;
+      final tangentLength = math.max(1.0, math.sqrt(tangentX * tangentX + tangentY * tangentY));
+      final laneSide = i.isEven ? -1.0 : 1.0;
+      final x = sample.$1.dx + (-tangentY / tangentLength) * laneSide * 3.2;
+      final y = sample.$1.dy + (tangentX / tangentLength) * laneSide * 3.2;
       final angle = math.atan2(tangentY, tangentX);
       const length = 17.0, height = 7.0;
       canvas.save();
@@ -1003,6 +1101,11 @@ class SettlementMap extends Component {
           Paint()..color = const Color(0xffd95c4c));
       canvas.drawCircle(Offset(-length / 2 + 1, 1.5), .65,
           Paint()..color = const Color(0xffd95c4c));
+      if (vehicle.stoppedAtSignal || vehicle.queued) {
+        final brake = Paint()..color = const Color(0xffff3028);
+        canvas.drawCircle(Offset(-length / 2 + 1, -1.5), 1.25, brake);
+        canvas.drawCircle(Offset(-length / 2 + 1, 1.5), 1.25, brake);
+      }
       canvas.restore();
     }
     if (busRoutePoints.length > 1) {
@@ -1123,11 +1226,30 @@ class SettlementMap extends Component {
   }
 
   List<List<Offset>> _createTrafficRoutes() {
+    List<List<Offset>> defaultRoutes() {
+      // The starter district has six permanent avenues (three horizontal,
+      // three vertical). Traffic follows these exact road centerlines.
+      Offset point(int column, int row) {
+        final p = cellCenter(column, row);
+        return Offset(p.x, p.y);
+      }
+      return [
+        [point(1, 8), point(7, 8), point(7, 13), point(13, 13),
+          point(13, 8), point(19, 8), point(19, 13), point(26, 13)],
+        [point(26, 13), point(19, 13), point(19, 18), point(13, 18),
+          point(13, 13), point(7, 13), point(7, 8), point(1, 8)],
+        [point(7, 1), point(7, 8), point(13, 8), point(13, 13),
+          point(19, 13), point(19, 18), point(19, 22)],
+        [point(19, 22), point(19, 18), point(13, 18), point(13, 13),
+          point(7, 13), point(7, 8), point(7, 1)],
+      ].map(_smoothRoute).toList(growable: false);
+    }
+
     final roads = <int, _Building>{
       for (final road in _buildings.where((building) => building.kind == 7))
         road.row * columns + road.column: road,
     };
-    if (roads.length < 2) return const [];
+    if (roads.length < 2) return defaultRoutes();
 
     int? roadAtBuilding(_Building building) {
       for (final (dc, dr) in const [(1, 0), (-1, 0), (0, 1), (0, -1)]) {
@@ -1195,10 +1317,39 @@ class SettlementMap extends Component {
         routes
           ..add(points)
           ..add(points.reversed.toList(growable: false));
-        if (routes.length >= 12) return routes;
+        if (routes.length >= 12) {
+          return routes.map(_smoothRoute).toList(growable: false);
+        }
       }
     }
-    return routes;
+    // Once the player has started laying roads, never send traffic onto the
+    // hard-coded starter avenues when the custom network is disconnected.
+    // That old fallback made cars appear to ignore the road tiles entirely.
+    if (routes.isEmpty) {
+      return roads.length >= 2 ? const <List<Offset>>[] : defaultRoutes();
+    }
+    return routes.map(_smoothRoute).toList(growable: false);
+  }
+
+  static List<Offset> _smoothRoute(List<Offset> points) {
+    if (points.length < 3) return points;
+    final result = <Offset>[points.first];
+    for (var i = 1; i < points.length - 1; i++) {
+      final previous = points[i - 1];
+      final corner = points[i];
+      final next = points[i + 1];
+      final incoming = corner + (previous - corner) * .28;
+      final outgoing = corner + (next - corner) * .28;
+      result.add(incoming);
+      for (var step = 1; step <= 5; step++) {
+        final t = step / 5;
+        final oneMinus = 1 - t;
+        result.add(incoming * (oneMinus * oneMinus) +
+            corner * (2 * oneMinus * t) + outgoing * (t * t));
+      }
+    }
+    result.add(points.last);
+    return result;
   }
 
   _BusRoute? _createBusRoute() {
@@ -1764,7 +1915,8 @@ class SettlementMap extends Component {
       }
     }
     if ({0, 2, 3, 5, 6}.contains(b.kind)) {
-      _drawDetailedBuilding(canvas, c, b.kind);
+      final styleSeed = (b.column * 17 + b.row * 31 + b.kind * 7) & 0x7fffffff;
+      _drawDetailedBuilding(canvas, Offset(c.x, c.y), b.kind, styleSeed: styleSeed);
       return;
     }
     final palette = [
@@ -1823,17 +1975,30 @@ class SettlementMap extends Component {
   }
 
 
-  void _drawDetailedBuilding(Canvas canvas, Offset c, int kind) {
+  void _drawDetailedBuilding(Canvas canvas, Offset c, int kind,
+      {required int styleSeed}) {
+    // Each lot receives a stable architectural style. The seed is derived from
+    // its grid coordinate, so buildings keep their appearance after saving.
+    final style = styleSeed % 4;
     final isTower = kind == 0 || kind == 6;
-    final floors = kind == 0 ? 5 : kind == 6 ? 4 : kind == 3 ? 3 : 2;
-    final height = floors * 10.0;
-    final width = kind == 3 ? 25.0 : 29.0;
+    final baseFloors = kind == 0 ? 5 : kind == 6 ? 4 : kind == 3 ? 3 : 2;
+    final floors = (baseFloors + (style == 1 && isTower ? 1 : 0))
+        .clamp(2, 7)
+        .toInt();
+    final height = floors * (style == 2 ? 9.0 : 10.0);
+    final width = (kind == 3 ? 25.0 : 29.0) + (style == 3 ? 5.0 : 0.0);
     final depth = 17.0;
-    final base = switch (kind) {
-      2 => const Color(0xffd7b77e),
-      3 => const Color(0xffc8d0c9),
-      5 => const Color(0xffd5c7a9),
-      6 => const Color(0xffd7d5c8),
+    final base = switch ((kind, style)) {
+      (2, _) => const Color(0xffd7b77e),
+      (3, 0) => const Color(0xffc8d0c9),
+      (3, 1) => const Color(0xffd8c5a9),
+      (3, 2) => const Color(0xffb8c9c7),
+      (3, _) => const Color(0xffd9d0c1),
+      (5, _) => const Color(0xffd5c7a9),
+      (6, _) => const Color(0xffd7d5c8),
+      (_, 1) => const Color(0xffd8c7b4),
+      (_, 2) => const Color(0xffd2d8d2),
+      (_, 3) => const Color(0xffe0c9a9),
       _ => const Color(0xffe6ddc9),
     };
     final leftWall = Path()
@@ -1855,6 +2020,17 @@ class SettlementMap extends Component {
       ..lineTo(c.dx, c.dy - height + depth / 2 - 8)
       ..close();
 
+    final sunAngle = (_timeOfDay * math.pi * 2) - math.pi / 2;
+    final shadowLength = 17.0 + 11.0 * math.sin(sunAngle).abs();
+    final shadowOffset = Offset(math.cos(sunAngle) * shadowLength,
+        math.sin(sunAngle) * shadowLength * .48);
+    final castShadow = Path()
+      ..moveTo(c.dx - width / 2 + shadowOffset.dx, c.dy - 5 + shadowOffset.dy)
+      ..lineTo(c.dx + shadowOffset.dx, c.dy + depth / 2 + shadowOffset.dy)
+      ..lineTo(c.dx + width / 2 + shadowOffset.dx, c.dy - 5 + shadowOffset.dy)
+      ..lineTo(c.dx + shadowOffset.dx, c.dy - height - depth / 2 + shadowOffset.dy)
+      ..close();
+    canvas.drawPath(castShadow, Paint()..color = const Color(0x3309120e));
     canvas.drawOval(
       Rect.fromCenter(
         center: Offset(c.dx + 3, c.dy + 3),
@@ -1877,7 +2053,11 @@ class SettlementMap extends Component {
       rightWall,
       Paint()..color = Color.lerp(base, const Color(0xff303a3a), .20)!,
     );
-    final windowPaint = Paint()..color = const Color(0xff6fabb8);
+    final hour = _timeOfDay * 24;
+    final isNight = hour < 6.5 || hour >= 19.5;
+    final windowPaint = Paint()..color = isNight
+        ? const Color(0xffffd88a)
+        : const Color(0xff6fabb8);
     final windowEdge = Paint()
       ..color = const Color(0xfff3e8d2)
       ..strokeWidth = 1.2;
@@ -1902,17 +2082,26 @@ class SettlementMap extends Component {
             Rect.fromLTWH(x - 2, y - 3, 4.5, 6),
             const Radius.circular(1),
           ),
-          Paint()..color = const Color(0xff578d9b),
+          Paint()..color = isNight
+              ? const Color(0xffffc96e)
+              : const Color(0xff578d9b),
         );
       }
     }
-    canvas.drawPath(roof, Paint()..color = switch (kind) {
-      2 => const Color(0xff547d83),
-      3 => const Color(0xffa6a69a),
-      5 => const Color(0xff586f83),
-      6 => const Color(0xffb9b8a9),
+    final roofColor = switch ((kind, style)) {
+      (2, _) => const Color(0xff547d83),
+      (3, 0) => const Color(0xffa6a69a),
+      (3, 1) => const Color(0xff526c80),
+      (3, 2) => const Color(0xff6c806f),
+      (3, _) => const Color(0xff9a5542),
+      (5, _) => const Color(0xff586f83),
+      (6, _) => const Color(0xffb9b8a9),
+      (_, 1) => const Color(0xff526d87),
+      (_, 2) => const Color(0xff697b68),
+      (_, 3) => const Color(0xff8c5143),
       _ => const Color(0xff9a5542),
-    });
+    };
+    canvas.drawPath(roof, Paint()..color = roofColor);
     canvas.drawPath(
       roof,
       Paint()
@@ -1933,13 +2122,29 @@ class SettlementMap extends Component {
     if (floors >= 3) {
       for (var floor = 1; floor < floors; floor++) {
         final balconyY = c.dy - 13 - floor * 10.0 + 4;
-        canvas.drawLine(Offset(c.dx - 12, balconyY),
-            Offset(c.dx - 3, balconyY),
-            Paint()..color = const Color(0xffd7d1bd)..strokeWidth = 1.3);
-        canvas.drawLine(Offset(c.dx + 5, balconyY),
-            Offset(c.dx + 13, balconyY),
-            Paint()..color = const Color(0xffd7d1bd)..strokeWidth = 1.3);
+        final balconyPaint = Paint()
+          ..color = const Color(0xffd7d1bd)
+          ..strokeWidth = style == 2 ? 1.8 : 1.3;
+        if (style != 1 || floor.isEven) {
+          canvas.drawLine(Offset(c.dx - 12, balconyY),
+              Offset(c.dx - 3, balconyY), balconyPaint);
+          canvas.drawLine(Offset(c.dx + 5, balconyY),
+              Offset(c.dx + 13, balconyY), balconyPaint);
+        }
       }
+    }
+    // Vertical facade ribs, corner columns and occasional decorative cornices.
+    if (style == 1 || style == 3) {
+      for (final sideX in [c.dx - width / 2 + 3, c.dx + width / 2 - 3]) {
+        canvas.drawLine(Offset(sideX, c.dy - 8),
+            Offset(sideX, c.dy - height - 7),
+            Paint()..color = const Color(0x55745e49)..strokeWidth = 1.8);
+      }
+    }
+    if (style == 2) {
+      canvas.drawLine(Offset(c.dx - width / 2, c.dy - height - 8),
+          Offset(c.dx + width / 2, c.dy - height - 8),
+          Paint()..color = const Color(0xffe9e0ce)..strokeWidth = 2.2);
     }
     if (isTower) {
       canvas.drawRect(
@@ -1960,6 +2165,155 @@ class SettlementMap extends Component {
     );
   }
 
+  void _drawConstructionSite(Canvas canvas, Offset center, double progress) {
+    final radius = 13 + (1 - progress) * 8;
+    final scaffold = Paint()..color = const Color(0xffd5a34c)..strokeWidth = 1.4;
+    canvas.drawLine(Offset(center.dx - radius, center.dy + 5),
+        Offset(center.dx - radius, center.dy - 13), scaffold);
+    canvas.drawLine(Offset(center.dx + radius, center.dy + 5),
+        Offset(center.dx + radius, center.dy - 13), scaffold);
+    canvas.drawLine(Offset(center.dx - radius, center.dy - 13),
+        Offset(center.dx + radius, center.dy - 13), scaffold);
+    canvas.drawLine(Offset(center.dx - radius, center.dy - 3),
+        Offset(center.dx + radius, center.dy - 3), scaffold);
+    canvas.drawRect(
+        Rect.fromLTWH(center.dx - 7, center.dy + 8, 14, 3),
+        Paint()..color = const Color(0xff9b7040));
+  }
+
+  void _drawNightAtmosphere(Canvas canvas) {
+    final hour = _timeOfDay * 24;
+    final darkness = hour < 5.5
+        ? .34
+        : hour < 7 ? .34 * (7 - hour) / 1.5
+        : hour < 18 ? 0.0
+        : hour < 20 ? .28 * (hour - 18) / 2
+        : .28;
+    if (darkness <= 0) return;
+    canvas.drawRect(
+      const Rect.fromLTWH(-1500, -1500, 3000, 3000),
+      Paint()..color = Color.fromRGBO(9, 20, 42, darkness),
+    );
+    final glow = Paint()..color = Color.fromRGBO(255, 190, 92, darkness * .9);
+    for (final building in _buildings) {
+      if (![0, 2, 3, 5, 6].contains(building.kind)) continue;
+      final center = cellCenter(building.column, building.row);
+      final floors = building.kind == 0 ? 5 : building.kind == 6 ? 4 : building.kind == 3 ? 3 : 2;
+      for (var floor = 0; floor < floors; floor++) {
+        final y = center.y - 13 - floor * 10.0;
+        for (var col = 0; col < 2; col++) {
+          final x = center.x - 11 + col * 8;
+          canvas.drawRect(Rect.fromLTWH(x - 1.7, y - 2.2, 3.4, 4.4), glow);
+        }
+        for (var col = 0; col < 2; col++) {
+          final x = center.x + 5 + col * 7;
+          canvas.drawRect(Rect.fromLTWH(x - 1.7, y - 2.2, 3.4, 4.4), glow);
+        }
+      }
+    }
+    // Street lamps glow at the permanent avenue crossings and on new roads.
+    final lampCenters = <Offset>[
+      for (final row in [8, 13, 18])
+        for (final column in [7, 13, 19])
+          Offset(cellCenter(column, row).x + 13, cellCenter(column, row).y - 7),
+      for (final road in _buildings.where((b) => b.kind == 7))
+        Offset(cellCenter(road.column, road.row).x + 13,
+            cellCenter(road.column, road.row).y - 7),
+    ];
+    for (final lamp in lampCenters) {
+      canvas.drawCircle(lamp, 10,
+          Paint()..color = Color.fromRGBO(255, 190, 92, darkness * .13));
+      canvas.drawCircle(lamp, 1.7,
+          Paint()..color = const Color(0xffffdf9a));
+    }
+  }
+
+  void _drawTrafficSignals(Canvas canvas) {
+    // Signal cycle: north/south green, amber clearance, east/west green,
+    // amber clearance. All lights share one clock, as a coordinated district.
+    final phase = _signalClock;
+    final northSouth = phase < 7 || phase >= 16;
+    final amber = (phase >= 7 && phase < 9) || (phase >= 16 && phase < 18);
+    final activeGreen = amber ? -1 : (northSouth ? 0 : 1);
+    final intersections = <(int, int)>[
+      for (final row in [8, 13, 18])
+        for (final column in [7, 13, 19]) (column, row),
+      // Add player-built junctions where at least three road cells meet.
+      for (final road in _buildings.where((b) => b.kind == 7))
+        if (const [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                .where((d) => _buildings.any((other) =>
+                    other.kind == 7 &&
+                    other.column == road.column + d.$1 &&
+                    other.row == road.row + d.$2))
+                .length >= 3)
+          (road.column, road.row),
+    ];
+    final drawn = <int>{};
+    for (final (column, row) in intersections) {
+      final key = row * columns + column;
+      if (!drawn.add(key)) continue;
+      final center = cellCenter(column, row);
+      for (final side in const [-1.0, 1.0]) {
+        final pole = Offset(center.x + side * 24, center.y - 12);
+        canvas.drawOval(
+          Rect.fromCenter(center: Offset(pole.dx + 1, pole.dy + 12),
+              width: 5, height: 2.5),
+          Paint()..color = const Color(0x5508110e),
+        );
+        canvas.drawLine(pole + const Offset(0, 12),
+            pole + const Offset(0, -7),
+            Paint()..color = const Color(0xff343b3b)..strokeWidth = 2.2);
+        final housing = RRect.fromRectAndRadius(
+            Rect.fromLTWH(pole.dx - 3.2, pole.dy - 17, 6.4, 13),
+            const Radius.circular(2));
+        canvas.drawRRect(housing, Paint()..color = const Color(0xff252d30));
+        canvas.drawRRect(housing, Paint()
+          ..color = const Color(0xff667274)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = .7);
+        final red = activeGreen == -1 || activeGreen != (side < 0 ? 0 : 1);
+        final green = activeGreen == (side < 0 ? 0 : 1);
+        final redColor = red ? const Color(0xffff4b43) : const Color(0xff612b2b);
+        final amberColor = amber ? const Color(0xffffc34f) : const Color(0xff66502b);
+        final greenColor = green ? const Color(0xff54e17c) : const Color(0xff285a3a);
+        canvas.drawCircle(Offset(pole.dx, pole.dy - 14), 1.65,
+            Paint()..color = redColor);
+        canvas.drawCircle(Offset(pole.dx, pole.dy - 10), 1.65,
+            Paint()..color = amberColor);
+        canvas.drawCircle(Offset(pole.dx, pole.dy - 6), 1.65,
+            Paint()..color = greenColor);
+        if (green || amber) {
+          final glowColor = green
+              ? const Color(0x6654e17c)
+              : const Color(0x66ffc34f);
+          canvas.drawCircle(Offset(pole.dx, pole.dy - (green ? 6 : 10)),
+              4.2, Paint()..color = glowColor);
+        }
+      }
+      // Pedestrian push-button and compact walk signal. Pedestrians receive
+      // a walk phase only while the vehicle axes are in clearance/red.
+      canvas.drawRRect(
+          RRect.fromRectAndRadius(
+              Rect.fromLTWH(center.x - 31, center.y + 5, 4, 7),
+              const Radius.circular(1)),
+          Paint()..color = const Color(0xff4d6260));
+      final pedestrianWalk = amber || activeGreen == -1;
+      final pedestrianBox = RRect.fromRectAndRadius(
+        Rect.fromLTWH(center.x + 27, center.y + 5, 6, 9),
+        const Radius.circular(1.5),
+      );
+      canvas.drawRRect(pedestrianBox,
+          Paint()..color = const Color(0xff20292b));
+      canvas.drawCircle(Offset(center.x + 30, center.y + 8), 1.35,
+          Paint()..color = pedestrianWalk
+              ? const Color(0xff4fe18a)
+              : const Color(0xffe64c48));
+      canvas.drawLine(Offset(center.x + 30, center.y + 9),
+          Offset(center.x + 30, center.y + 12),
+          Paint()..color = const Color(0xffdce7df)..strokeWidth = .8);
+    }
+  }
+
   void _drawPeople(Canvas canvas) {
     for (final person in people.localResidents) {
       if (person.onBus) continue;
@@ -1973,6 +2327,13 @@ class SettlementMap extends Component {
         'mystic' => const Color(0xffa68bcc),
         _ => const Color(0xffe4bf8e),
       };
+      canvas.save();
+      final heading = math.atan2(person.velocityY, person.velocityX);
+      if (person.velocityX.abs() + person.velocityY.abs() > 2) {
+        canvas.translate(p.x, p.y);
+        canvas.rotate(heading + math.pi / 2);
+        canvas.translate(-p.x, -p.y);
+      }
       canvas.drawOval(Rect.fromCenter(
         center: Offset(p.x + 1, p.y + 5), width: 8, height: 3),
         Paint()..color = const Color(0x660d1714));
@@ -1997,6 +2358,7 @@ class SettlementMap extends Component {
           math.pi, math.pi, false,
           Paint()..color = const Color(0xff514237)..strokeWidth = 1.2
             ..style = PaintingStyle.stroke);
+      canvas.restore();
     }
   }
 

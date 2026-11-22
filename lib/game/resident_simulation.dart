@@ -483,6 +483,8 @@ class ResidentSimulation {
           final dy = site.position.y - r.position.y;
           final distance = sqrt(dx * dx + dy * dy);
           if (distance < 18) {
+            r.velocityX *= .55;
+            r.velocityY *= .55;
             if (r.waitingForBus && site.mapId == r.busOriginStopId) {
               r.activity = ResidentActivity.waitingAtBusStop;
             } else if (r.returningHome) {
@@ -502,7 +504,23 @@ class ResidentSimulation {
               site.users++;
             }
           } else {
-            _move(r, dx / distance * 55 * dt, dy / distance * 55 * dt);
+            // Accelerate and turn smoothly instead of teleporting directly
+            // along the target vector. The velocity also drives sprite facing.
+            const maxSpeed = 55.0;
+            final desiredX = dx / distance * maxSpeed;
+            final desiredY = dy / distance * maxSpeed;
+            final steering = (dt * 5.5).clamp(0.0, 1.0);
+            r.velocityX += (desiredX - r.velocityX) * steering;
+            r.velocityY += (desiredY - r.velocityY) * steering;
+            final stepX = r.velocityX * dt;
+            final stepY = r.velocityY * dt;
+            // Do not overshoot a destination on a long frame.
+            final stepLength = sqrt(stepX * stepX + stepY * stepY);
+            if (stepLength >= distance) {
+              _move(r, dx, dy);
+            } else {
+              _move(r, stepX, stepY);
+            }
           }
         case ResidentActivity.working:
           if (r.onShift) break;
@@ -527,6 +545,9 @@ class ResidentSimulation {
           ? r.walkPhase + dt * 16
           : r.walkPhase * .9;
     }
+    // Keep pedestrians from occupying the same point. This runs after their
+    // individual steering so the final positions remain separated.
+    resolvePedestrianSpacing(dt: dt);
     _updateSocial(dt);
     _updateFamilies(dt);
     _updateBusPassengers(
@@ -994,6 +1015,28 @@ class ResidentSimulation {
       if (resident.id == id) return resident;
     }
     return null;
+  }
+
+  /// Soft collision avoidance for pedestrians. Moving residents gently yield
+  /// around one another instead of stacking into a single sprite.
+  void resolvePedestrianSpacing({double dt = 1}) {
+    if (!dt.isFinite || dt < 0) throw ArgumentError.value(dt, 'dt');
+    final people = localResidents.where((r) => !r.onBus).toList();
+    for (var i = 0; i < people.length; i++) {
+      for (var j = i + 1; j < people.length; j++) {
+        final a = people[i], b = people[j];
+        final dx = b.position.x - a.position.x;
+        final dy = b.position.y - a.position.y;
+        final distance = sqrt(dx * dx + dy * dy);
+        const desiredGap = 11.0;
+        if (distance >= desiredGap) continue;
+        final nx = distance < .001 ? (i.isEven ? 1.0 : -1.0) : dx / distance;
+        final ny = distance < .001 ? 0.0 : dy / distance;
+        final strength = min((desiredGap - distance) * .5, 2.4 * dt);
+        _move(a, -nx * strength, -ny * strength);
+        _move(b, nx * strength, ny * strength);
+      }
+    }
   }
 
   void _move(ResidentAgent r, double dx, double dy) {

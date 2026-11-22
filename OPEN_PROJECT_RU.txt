@@ -1,0 +1,16 @@
+КАК ОТКРЫТЬ ПРОЕКТ
+
+1. Распакуйте архив в отдельную папку, например C:\soft\one_yard_flutter.
+2. В Android Studio / VS Code открывайте ИМЕННО корневую папку one_yard_flutter — ту, где сразу видны pubspec.yaml, lib, android, assets и test.
+3. Не открывайте вложенную папку one_yard_flutter-main. Это дублирующая копия проекта из предыдущей упаковки; в этом чистом архиве она уже удалена.
+4. В терминале корневой папки выполните:
+   flutter pub get
+   flutter analyze
+   flutter test
+   flutter build apk --release
+5. APK обычно появится в build/app/outputs/flutter-apk/app-release.apk.
+
+ВАЖНО
+- Не удаляйте папки lib, android, assets, test и файлы pubspec.yaml / pubspec.lock.
+- Если вы работаете с уже существующей папкой на диске, сначала сделайте резервную копию. Удалять вложенную one_yard_flutter-main можно только если в корневой папке действительно есть pubspec.yaml, lib и android.
+- Игровые сохранения на устройстве не хранятся в этой папке проекта; перед переустановкой APK всё равно рекомендуется сделать внутриигровой экспорт сохранения, если он доступен.

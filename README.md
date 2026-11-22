@@ -57,3 +57,53 @@ APK GitHub Actions публикует как артефакт запуска wor
 
 Проверка сборки Flutter в среде подготовки не выполнялась: Flutter SDK недоступен.
 Перед выпуском APK рекомендуется выполнить `flutter pub get`, `flutter analyze` и `flutter test`.
+
+## Live city rendering update (2026-11-23)
+
+This iteration continues the procedural isometric renderer in `lib/main.dart`:
+
+- Two-finger twist rotates the Flame viewfinder; pinch zoom and drag panning remain enabled.
+- Screen-to-world building placement compensates for the camera rotation.
+- Cars follow the permanent avenue network in the starter district and use rounded waypoint turns. When the player lays out a connected road network, commuter routes are generated from that network.
+- Newly placed and automatically grown buildings animate upward from their foundations with a temporary scaffold.
+- The time-of-day cycle now darkens the city at night and adds warm window and street-light illumination.
+- Pedestrian sprites turn toward their current movement vector while their walking cycle animates.
+
+The world is still rendered as procedural 2.5D/isometric artwork with Flutter Canvas; it is not a polygonal 3D engine. This environment did not have the Flutter/Dart SDK installed, so an APK build and automated Flutter test run could not be performed here. Run `flutter pub get`, `flutter analyze`, and `flutter test` in a Flutter development environment before release.
+
+## Городская инфраструктура — обновление 2026-11-23 (итерация 2)
+
+- У зданий одного типа теперь есть четыре устойчивых архитектурных варианта: различаются высота отдельных жилых башен, ширина корпуса, палитра фасада и крыши, балконный ритм и вертикальные декоративные элементы. Вариант вычисляется из координат участка и не меняется после сохранения/загрузки.
+- На основных перекрёстках и на пользовательских дорожных узлах с тремя и более соседними дорожными клетками отрисованы светофоры. Сигналы переключаются по согласованному циклу: зелёный для одной оси, жёлтая фаза, зелёный для другой оси, жёлтая фаза.
+- Тени зданий получили направление и длину, зависящие от положения игрового солнца; смена освещения синхронизирована с циклом дня и ночи.
+- Существующая автобусная система сохраняет остановки, расписание, посадку/высадку пассажиров и оплату проезда; редактор по-прежнему позволяет размещать дорожные клетки и подключать их к сети.
+
+Ограничение этой итерации: светофоры пока являются визуальной инфраструктурой с циклом фаз. Автомобили ещё не получают индивидуальную команду остановки на красный, не рассчитывают очереди и не моделируют столкновения. Для полноценного транспортного поведения следующим шагом нужен диспетчер перекрёстков и система очередей/приоритета на дорожных узлах.
+
+## Транспортная симуляция — обновление 2026-11-23 (итерация 3)
+
+- Легковые автомобили получили собственное состояние движения: скорость, прогресс по маршруту, остановка на регулируемом перекрёстке и очередь за впереди идущей машиной.
+- Автомобиль заранее проверяет следующий светофор на своём маршруте. На красный и в жёлтую фазу он не въезжает в перекрёсток; при остановке загораются стоп-сигналы.
+- Машины одного направления смещены в свою полосу, чтобы встречные потоки меньше накладывались друг на друга.
+- У перекрёстков добавлены компактные пешеходные сигналы, синхронизированные с фазами светофора.
+- Состояние машин является временным состоянием симуляции и пересчитывается при изменении дорожной сети; оно не меняет формат сохранения города.
+
+Ограничения: это упрощённая 2.5D транспортная модель. Пока нет столкновений, обгона, отдельных полос поворота, адаптивного управления светофорами и физической модели разгона/торможения. Пешеходные сигналы визуализируют фазу, но переход пешеходов через дорогу ещё не блокируется транспортным потоком. Проверка `flutter analyze`, `flutter test` и сборка APK требуют Flutter SDK и в этой среде не выполнялись.
+
+## Iteration: pedestrian crowd movement
+
+- Added soft pedestrian separation after each resident update so local residents do not stack on the same point.
+- The separation is bounded per frame and clamped by the existing world bounds.
+- Added regression tests for overlapping spawns and invalid frame deltas.
+
+This is a lightweight crowd-avoidance layer, not full navigation or sidewalk/crosswalk pathfinding.
+
+## Пешеходная анимация — обновление 2026-11-23 (итерация 7)
+
+- Пешеходы при движении к выбранной цели теперь разгоняются постепенно, а не сразу получают полную скорость.
+- Вектор скорости плавно поворачивает к цели; существующая отрисовка использует этот вектор для разворота спрайта.
+- На коротком последнем участке движение ограничивается расстоянием до цели, чтобы персонаж не пролетал сквозь точку назначения на длинном кадре.
+- При прибытии скорость плавно гасится.
+- Добавлены unit-тесты на плавный разгон и отсутствие перелёта цели.
+
+Это улучшает кинематику спрайтов, но пока не добавляет навигацию по тротуарам, физическую посадку в автобус или поиск обходного пути вокруг зданий. Для проверки в Flutter-среде выполнить `flutter pub get`, `flutter analyze` и `flutter test`.
